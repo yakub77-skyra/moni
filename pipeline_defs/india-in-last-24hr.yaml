@@ -1,0 +1,160 @@
+name: india-in-last-24hr
+version: "1.0"
+description: >
+  Daily vertical India news roundup in map-card style. Free RSS scraper
+  (Indian outlets only) ranks 5 fresh stories, OpenRouter free model rewrites
+  them, visuals come only from re-licensed stock or generated maps, and the
+  compose stage recreates the reference look: dark India map, one highlighted
+  state, neon connector, dashed media card, headline bar, source end card.
+category: documentary
+stability: beta
+default_checkpoint_policy: guided
+
+reference_input:
+  supported: true
+  analysis_depth: standard
+  analysis_tools:
+    - audio_probe
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/india-in-last-24hr/executive-producer
+  budget_default_usd: 1.00
+  max_revisions_per_stage: 3
+  max_send_backs: 2
+  max_wall_time_minutes: 90
+
+extensions:
+  custom_scripts: true
+  custom_playbooks: true
+  custom_skills: true
+  custom_tools: true
+
+required_skills:
+  - pipelines/india-in-last-24hr/executive-producer
+  - pipelines/india-in-last-24hr/idea-director
+  - pipelines/india-in-last-24hr/script-director
+  - pipelines/india-in-last-24hr/asset-director
+  - pipelines/india-in-last-24hr/edit-director
+  - pipelines/india-in-last-24hr/compose-director
+  - meta/reviewer
+  - meta/checkpoint-protocol
+
+compatible_playbooks:
+  recommended:
+    - india-last-24hr-map
+  also_works:
+    - clean-professional
+    - flat-motion-graphics
+  custom_allowed: true
+
+stages:
+  - name: idea
+    skill: pipelines/india-in-last-24hr/idea-director
+    produces:
+      - brief
+    tools_available:
+      - india_news_scraper
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Exactly 5 stories selected, each with outlet + source_url + state
+      - All stories within the lookback window (default 24h)
+      - Visual plan uses stock/generated media only (no publisher photos)
+    success_criteria:
+      - Schema-valid brief artifact
+      - brief.metadata.stories has 5 entries with source URLs
+
+  - name: script
+    skill: pipelines/india-in-last-24hr/script-director
+    required_artifacts_in:
+      - brief
+    produces:
+      - script
+    required_tools:
+      - openrouter_scriptwriter
+    tools_available:
+      - openrouter_scriptwriter
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Every card rewritten in own words (no raw RSS headline reuse)
+      - Narration is 12-18 spoken words per card, neutral factual tone
+      - Each card carries rank, state, outlet, source_url, visual_query
+    success_criteria:
+      - Schema-valid script artifact with 5 sections
+      - Card count matches story count
+
+  - name: assets
+    skill: pipelines/india-in-last-24hr/asset-director
+    required_artifacts_in:
+      - script
+      - brief
+    produces:
+      - asset_manifest
+    required_tools:
+      - piper_tts
+    tools_available:
+      - piper_tts
+      - pexels_video
+      - pixabay_video
+      - pixabay_music
+      - freesound_music
+      - tts_selector
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Narration audio exists per card (Piper offline default)
+      - Background music licensed via Pixabay/Freesound only
+      - Every visual asset has provenance (provider, license, URL)
+      - No publisher lead images burned into any asset
+    success_criteria:
+      - Schema-valid asset_manifest artifact
+      - One narration asset per script section
+
+  - name: edit
+    skill: pipelines/india-in-last-24hr/edit-director
+    required_artifacts_in:
+      - script
+      - asset_manifest
+    produces:
+      - edit_decisions
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - 720x1280 vertical timeline, 5 map cards + intro + end card
+      - Cuts follow narration timing, no two adjacent cards share a state
+      - End card lists all 5 source outlets + URLs
+    success_criteria:
+      - Schema-valid edit_decisions artifact
+      - Timeline within 10% of script total duration
+
+  - name: compose
+    skill: pipelines/india-in-last-24hr/compose-director
+    required_artifacts_in:
+      - edit_decisions
+      - asset_manifest
+      - brief
+    produces:
+      - render_report
+    required_tools:
+      - video_compose
+    optional_tools:
+      - audio_mixer
+      - video_trimmer
+      - video_stitch
+    tools_available:
+      - video_compose
+      - audio_mixer
+      - video_trimmer
+      - video_stitch
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - 720x1280 output passes ffprobe validation
+      - Map-card style matches india-last-24hr-map playbook
+      - Music mixed under narration, end card readable for 4s
+    success_criteria:
+      - Schema-valid render_report artifact
+      - Output file exists and passes ffprobe validation

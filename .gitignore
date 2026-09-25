@@ -72,6 +72,13 @@ generated_image.png
 # Downloaded music files (Pixabay, Freesound — not source code)
 pixabay_music_*
 
+# Daily-news reference media (large input clip, extracted frames, fetched
+# article assets). The reference video is user-provided, not source. The
+# pipeline reconstructs everything from RSS + stock media at run time.
+reference/
+bin/
+projects/india-in-last-24hr/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -97,6 +104,8 @@ venv/
 
 # Backlot local cache (thumbnails)
 .backlot/
+# Local prompt/tool cache database (machine-local state, not source)
+.cachebro/
 
 # Workspace-local third-party runtimes (for example the portable Blender LTS
 # used by blender_world). These are checksum-verified but never committed.
@@ -104,3 +113,4 @@ venv/
 
 # Local Wan / diffusers GPU environment
 .venv-wan/
+

@@ -16,6 +16,7 @@ import { ProductReveal, ProductRevealProps } from "./components/ProductReveal";
 import { CaptionOverlay, WordCaption } from "./components/CaptionOverlay";
 import { CollageBurst, CollageBurstProps } from "./CollageBurst";
 import { LyricOverlay, LyricOverlayProps } from "./LyricOverlay";
+import { IndiaDailyNews, IndiaDailyNewsProps } from "./IndiaDailyNews";
 
 // ---------------------------------------------------------------------------
 // Theme System — prevents every video from looking like dark fintech
@@ -131,6 +132,17 @@ const calculateMetadata: CalculateMetadataFunction<ExplainerProps> = async ({
   // Add 1 second padding for final fade
   return { durationInFrames: Math.ceil((lastEnd + 1) * 30) };
 };
+
+const calculateIndiaDailyNewsMetadata: CalculateMetadataFunction<IndiaDailyNewsProps> =
+  async ({ props }) => {
+    const cards = props.cards || [];
+    const storyFrames = cards.reduce(
+      (total, card) => total + (card.durationInFrames || 0),
+      0,
+    );
+    const total = storyFrames + (props.endCardFrames || 120);
+    return { durationInFrames: Math.max(30, total) };
+  };
 
 export const Root: React.FC = () => {
   return (
@@ -295,6 +307,23 @@ export const Root: React.FC = () => {
           lyrics: [],
           bottomY: 0.88,
         } as LyricOverlayProps}
+      />
+      <Composition
+        id="IndiaDailyNews"
+        component={IndiaDailyNews}
+        durationInFrames={30 * 60}
+        fps={30}
+        width={720}
+        height={1280}
+        defaultProps={{
+          cards: [],
+          audioSrc: "",
+          mapPathsSrc: "india-daily-news/state-paths.json",
+          sources: [],
+          endCardFrames: 120,
+          durationInFrames: 30 * 60,
+        }}
+        calculateMetadata={calculateIndiaDailyNewsMetadata}
       />
       <Composition
         id="EndTag"

@@ -1,0 +1,96 @@
+identity:
+  name: "India Last 24hr Map"
+  category: motion-graphics
+  mood: urgent, cinematic, patriotic
+  pace: fast
+  best_for: "Daily vertical India news roundup in map-card style"
+
+visual_language:
+  color_palette:
+    primary: ["#1B1B1F", "#2A2A30"]
+    accent: ["#C8FF00", "#FF5A1F", "#22C55E", "#F59E0B"]
+    background: "#0E0E11"
+    text: "#FFFFFF"
+    muted: "#9CA3AF"
+  composition: full-bleed desaturated India map, one highlighted state, neon connector to media card
+  texture: satellite map grain, dark vignette, subtle grid glow
+
+typography:
+  headings:
+    font: "Inter"
+    weight: 800
+    tracking: "-0.01em"
+  body:
+    font: "Inter"
+    weight: 600
+    line_height: 1.35
+  stat_card:
+    font: "Inter"
+    weight: 800
+    size_multiplier: 4.0
+  scale_system: "major_third"
+  weight_matrix:
+    title: 800
+    heading: 800
+    body: 600
+    caption: 600
+
+motion:
+  transitions: [zoom-in, crossfade, slide-up]
+  animation_style: "map zoom to state, neon line draw, card pop-in with glow"
+  pacing_rules:
+    min_scene_hold_seconds: 8
+    max_scene_hold_seconds: 16
+    text_card_hold_seconds: 12
+    stat_card_hold_seconds: 2.0
+    transition_duration_seconds: 0.6
+  entrance: "state highlight fade with neon pulse"
+  exit: "crossfade to next state zoom"
+
+audio:
+  voice_style: "news anchor, brisk, neutral, Hindi-English neutral accent"
+  music_mood: "tense cinematic news bed, driving but not overpowering"
+  music_volume: 0.1
+  sfx_style: "map whoosh on state zoom, soft pop on card reveal"
+  ducking_threshold_db: -3
+
+asset_generation:
+  image_prompt_prefix: "dark satellite map of India, cinematic, desaturated, "
+  image_negative_prompt: "bright, cartoon, cluttered, low quality, watermark"
+  diagram_style: "state boundary glow, neon connector line, rounded-rank badge"
+  consistency_anchors:
+    - "720x1280 vertical canvas in every scene"
+    - "Neon lime (#C8FF00) dashed card frame and connector line"
+    - "State highlight + white rank badge, never any other badge style"
+    - "Card subtitle bar is white with black text, bottom-anchored"
+    - "Map stays dark desaturated; only the active state is colored"
+
+overlays:
+  stat_card:
+    bg: "#FFFFFF"
+    border: "#C8FF00"
+    radius: 999
+    shadow: "0 0 24px rgba(200,255,0,0.45)"
+  key_term:
+    bg: "#FFFFFF"
+    text: "#111111"
+    radius: 4
+
+quality_rules:
+  - "Vertical 720x1280 canvas, text readable at phone distance"
+  - "One state highlighted per card, others stay desaturated"
+  - "Card frame is neon dashed with corner glow accents"
+  - "Subtitle bar carries the full rewritten headline, never the raw RSS title"
+  - "End card lists every source outlet + URL, plus follow CTA"
+
+chart_palette:
+  - "#C8FF00"
+  - "#FF5A1F"
+  - "#22C55E"
+  - "#F59E0B"
+  - "#38BDF8"
+
+color_rules:
+  harmony_type: "analogous"
+  contrast_validation: true
+  colorblind_safe: false
