@@ -111,12 +111,16 @@ def test_geo_projection_emits_scene_ready_paths() -> None:
 
     result = geojson_to_svg_paths(geojson)
 
-    assert set(result) == {"paths", "centroids", "outline"}
+    assert set(result) == {"paths", "centroids", "pans", "outline"}
     assert result["paths"]["Karnataka"].startswith("M")
     assert result["paths"]["Karnataka"].endswith("Z")
     x, y = result["centroids"]["Karnataka"]
     assert 24 <= x <= 696 and 24 <= y <= 1256
     assert result["outline"] == result["paths"]["Karnataka"]
+    # The pan must stay clamped: panning a whole zoomed country off-frame
+    # would leave the card floating on empty background.
+    pan_x, pan_y = result["pans"]["Karnataka"]
+    assert abs(pan_x) <= 120 and abs(pan_y) <= 150
 
 
 def test_sapi_narration_uses_wav_and_zero_cost_local_voice(tmp_path: Path) -> None:

@@ -52,6 +52,7 @@ export type IndiaDailyNewsProps = {
 interface MapData {
   paths: Record<string, string>;
   centroids: Record<string, [number, number]>;
+  pans: Record<string, [number, number]>;
   outline: string;
 }
 
@@ -81,14 +82,21 @@ const normalizeState = (name: string): string => {
   return STATE_ALIASES[flat] ?? flat;
 };
 
-const findStatePath = (
+const FOCUS_X = 360;
+const FOCUS_Y = 760;
+
+const findState = (
   map: MapData,
   state: string,
-): { path: string; centroid: [number, number] } | null => {
+): { path: string; centroid: [number, number]; pan: [number, number] } | null => {
   const want = normalizeState(state);
   for (const [key, path] of Object.entries(map.paths)) {
     if (normalizeState(key) === want) {
-      return { path, centroid: map.centroids[key] ?? [360, 640] };
+      return {
+        path,
+        centroid: map.centroids[key] ?? [FOCUS_X, FOCUS_Y],
+        pan: map.pans?.[key] ?? [0, 0],
+      };
     }
   }
   return null;
@@ -105,14 +113,22 @@ const MapCard: React.FC<{
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
-  const match = findStatePath(map, card.state);
-  const [rawX, rawY] = match?.centroid ?? [360, 760];
-  // Keep the badge clear of the media card + headline bar: it must sit on
-  // open map, drawn above everything except the watermark. Nudged below the
-  // centroid so small states (Goa, Delhi) peek out above the badge instead
-  // of hiding entirely underneath it.
-  const badgeX = Math.min(630, Math.max(90, rawX));
-  const badgeY = Math.min(1080, Math.max(CARD_BOTTOM + 180, rawY + 70));
+  const match = findState(map, card.state);
+  // The map pans so the story's state lands in the open band below the
+  // headline bar; the badge then sits just below that focus point so the
+  // highlighted state reads around it, as in the reference frames.
+  const [panX, panY] = match?.pan ?? [0, 0];
+  // The badge tracks the (panned) state centroid, nudged below it so the
+  // highlighted shape reads around the badge instead of hiding under it.
+  const badgeX = match
+    ? Math.min(630, Math.max(90, match.centroid[0] + panX))
+    : FOCUS_X;
+  const badgeY = match
+    ? Math.min(
+        1090,
+        Math.max(CARD_BOTTOM + 190, match.centroid[1] + panY + 70),
+      )
+    : FOCUS_Y;
   const barTop = CARD_BOTTOM - 44;
 
   const badgeScale = spring({
@@ -146,11 +162,12 @@ const MapCard: React.FC<{
 
   return (
     <AbsoluteFill style={{ opacity: fadeOut, backgroundColor: "#0A0C0F" }}>
-      {/* Map layer */}
+      {/* Map layer — panned per story so the highlighted state is never
+          hidden behind the media card or the headline bar */}
       <AbsoluteFill
         style={{
-          transform: `scale(${zoom})`,
-          transformOrigin: "50% 60%",
+          transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
+          transformOrigin: "50% 50%",
         }}
       >
         <svg
@@ -173,9 +190,10 @@ const MapCard: React.FC<{
             <path
               d={match.path}
               fill={STATE_GREEN}
-              fillOpacity={0.85}
+              fillOpacity={0.9}
               stroke="#FFFFFF"
-              strokeWidth={2.5}
+              strokeWidth={3}
+              style={{ filter: "drop-shadow(0 0 10px rgba(47,215,93,0.75))" }}
             />
           ) : null}
         </svg>

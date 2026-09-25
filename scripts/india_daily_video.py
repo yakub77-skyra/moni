@@ -41,9 +41,15 @@ VOICE_NAME = "Microsoft Zira Desktop"
 FPS = 30
 RENDER_WIDTH = 720
 RENDER_HEIGHT = 1280
-# Map bleed: the reference frames crop into the country (full-bleed) instead
-# of fitting the whole outline. Zoom about frame center after the fit.
-MAP_ZOOM = 1.35
+# Map bleed: the reference frames keep the whole country in frame (only a
+# slight push-in), so the highlighted state is always readable in place.
+MAP_ZOOM = 1.12
+# Where a story's state is nudged to on screen: the open map band under the
+# headline bar. The pan is clamped so the country never leaves the frame.
+FOCUS_X = 360
+FOCUS_Y = 760
+PAN_LIMIT_X = 120
+PAN_LIMIT_Y = 150
 # Silence pads around each card in the assembled narration track.
 PAD_BEFORE_SECONDS = 0.25
 PAD_BETWEEN_SECONDS = 0.45
@@ -409,6 +415,7 @@ def geojson_to_svg_paths(
 
     paths: dict[str, str] = {}
     centroids: dict[str, list[float]] = {}
+    pans: dict[str, list[float]] = {}
     outline: list[str] = []
     for feature in geojson.get("features", []):
         geometry = feature.get("geometry") or {}
@@ -435,11 +442,23 @@ def geojson_to_svg_paths(
         if name and name not in paths:
             paths[name] = text
             if state_xs:
-                centroids[name] = [
-                    round((min(state_xs) + max(state_xs)) / 2, 1),
-                    round((min(state_ys) + max(state_ys)) / 2, 1),
+                cx = round((min(state_xs) + max(state_xs)) / 2, 1)
+                cy = round((min(state_ys) + max(state_ys)) / 2, 1)
+                centroids[name] = [cx, cy]
+                # Per-state pan: slide the map so the story's state sits in the
+                # open band BELOW the headline bar. Without it, a northern
+                # state (Delhi, y~406) hides behind the bar and the card's
+                # headline element -- the highlighted state -- never renders.
+                pans[name] = [
+                    round(max(-PAN_LIMIT_X, min(PAN_LIMIT_X, FOCUS_X - cx)), 1),
+                    round(max(-PAN_LIMIT_Y, min(PAN_LIMIT_Y, FOCUS_Y - cy)), 1),
                 ]
-    return {"paths": paths, "centroids": centroids, "outline": "".join(outline)}
+    return {
+        "paths": paths,
+        "centroids": centroids,
+        "pans": pans,
+        "outline": "".join(outline),
+    }
 
 
 def _run_assets(
@@ -543,6 +562,9 @@ def _render(props_path: Path, project: Path) -> Path:
     npx = shutil.which("npx")
     if not npx:
         raise RuntimeError("npx not found on PATH; install Node.js to render")
+    # Every core: the render is CPU-bound on per-frame headless Chrome, and
+    # Remotion's default concurrency leaves cores idle on a small box.
+    concurrency = max(1, (os.cpu_count() or 2) - 1)
     cmd = [
         npx, "remotion", "render",
         str(composer / "src" / "index.tsx"),
@@ -550,6 +572,7 @@ def _render(props_path: Path, project: Path) -> Path:
         str(output),
         f"--props={props_arg}",
         f"--public-dir={composer / 'public'}",
+        f"--concurrency={concurrency}",
     ]
     completed = subprocess.run(cmd, check=False, cwd=composer,
                                capture_output=True, text=True)

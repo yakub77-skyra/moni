@@ -1,0 +1,118 @@
+name: India daily news video
+
+# Zero-cost daily roundup: free RSS -> free OpenRouter rewrite -> Pexels
+# stock + local Windows SAPI narration -> Remotion render.
+#
+# Security posture (read before editing):
+#   * NO pull_request / pull_request_target trigger. A fork PR must never be
+#     able to reach repository secrets, so this workflow only ever runs from
+#     a maintainer dispatch or the schedule on the default branch.
+#   * All credentials come from `secrets.*` and are passed as env vars to the
+#     single step that needs them. Never inline a key, never commit .env.
+#   * `permissions: contents: read` is the minimum scope; this job never
+#     pushes, comments, or writes to the repo.
+#   * Third-party actions are pinned to immutable commit SHAs, so a moved or
+#     hijacked version tag cannot change what runs. Bump deliberately.
+#   * `concurrency` prevents two scheduled runs from racing on the same
+#     workspace and burning the free quota twice.
+#
+# Runner note: windows-latest is REQUIRED, not a preference -- narration uses
+# the Windows SAPI voice (System.Speech), which does not exist on Linux.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stories:
+        description: "How many stories to include"
+        default: "5"
+  schedule:
+    # 06:00 UTC daily -- after the morning Indian news cycle.
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: india-daily-news
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Scrape, narrate, render
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: remotion-composer/package-lock.json
+
+      - name: Install Remotion dependencies
+        working-directory: remotion-composer
+        run: npm ci
+
+      - name: Source and script the roundup
+        # Free RSS + a free OpenRouter model. The script stage itself refuses
+        # any model that is not ":free"/"/free", so a bad input cannot bill.
+        # STORY_COUNT travels as an env var, never interpolated into the
+        # script body -- workflow_dispatch inputs are user-supplied strings.
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: openrouter/free
+          STORY_COUNT: ${{ inputs.stories }}
+        run: |
+          # Scheduled runs have no dispatch input, and a dispatch input is an
+          # arbitrary string: parse it as an int and fall back, so the value
+          # is always exactly one safe numeric argument.
+          $count = 5
+          $parsed = 0
+          if ([int]::TryParse($env:STORY_COUNT, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 10) {
+            $count = $parsed
+          }
+          python scripts/india_daily_roundup.py `
+            --stories $count `
+            --lookback 24 `
+            --project projects/india-in-last-24hr
+
+      - name: Acquire assets and render
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python scripts/india_daily_video.py `
+            --project projects/india-in-last-24hr `
+            --render
+
+      - name: Verify the render
+        # Fail the run rather than publish a broken file.
+        run: |
+          $mp4 = "projects/india-in-last-24hr/renders/india-daily.mp4"
+          if (-not (Test-Path $mp4)) { throw "render output missing: $mp4" }
+          ffprobe -v error -show_entries stream=codec_type,width,height `
+            -show_entries format=duration -of default=nw=1 $mp4
+
+      - name: Upload the finished video
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: india-daily-news
+          path: projects/india-in-last-24hr/renders/india-daily.mp4
+          if-no-files-found: error
+          retention-days: 7
