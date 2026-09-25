@@ -10,4 +10,9 @@ across at least 3 cards (map variety). Record the visual plan per story:
 stock query + map highlight state. Note explicitly that publisher lead
 images are reference-only.
 
+Before locking the production plan, Present Both composition runtimes for
+`render_runtime` selection: Remotion and hyperframes. Recommend one for this
+brief, but wait for explicit user approval and log the decision as
+`render_runtime_selection`.
+
 Approval gate: human confirms the 5 stories + states before script stage.
