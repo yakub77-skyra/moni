@@ -78,6 +78,10 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: openrouter/free
           STORY_COUNT: ${{ inputs.stories }}
+          # Second layer behind the scripts' own _force_utf8_console(): a
+          # Windows runner console is cp1252, which cannot encode the
+          # typographic characters in normal rewritten news copy.
+          PYTHONIOENCODING: utf-8
         run: |
           # Scheduled runs have no dispatch input, and a dispatch input is an
           # arbitrary string: parse it as an int and fall back, so the value
@@ -96,6 +100,7 @@ jobs:
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PYTHONIOENCODING: utf-8
         run: |
           python scripts/india_daily_video.py `
             --project projects/india-in-last-24hr `

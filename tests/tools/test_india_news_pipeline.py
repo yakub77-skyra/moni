@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 import wave
 from pathlib import Path
+from unittest import mock
 
 from scripts.india_daily_video import (
     assemble_narration,
@@ -57,6 +59,41 @@ def test_india_filter_accepts_genuine_india_connection() -> None:
         "India sends relief supplies after Nepal earthquake",
         "Indian Air Force aircraft carried tents and medicine to Kathmandu.",
     )
+
+
+def test_india_filter_ignores_publisher_masthead_in_headline() -> None:
+    # Hindustan Times appends "| HT India" to every RSS headline. That tag
+    # supplies the word "india" to all of their items, which used to satisfy
+    # the India-context check and let foreign stories through the filter.
+    nepal = "Bagmati River Floods Low-Lying Areas As Landslides Hit Key Nepal Routes | HT India"
+    assert not _is_india_related(nepal, "Landslides hit key routes in Nepal.")
+    # A genuinely Indian story from the same outlet must still pass.
+    assert _is_india_related(
+        "Delhi High Court orders removal of deepfake images | HT India",
+        "The court issued notices to social media platforms.",
+    )
+    # A long trailing clause is real headline text, not a masthead: keep it.
+    assert _is_india_related(
+        "Supreme Court seeks Centre response on plea filed by four petitioners",
+        "The court asked the government to respond within four weeks.",
+    )
+
+
+def test_runners_force_utf8_console() -> None:
+    # The CI runner is a cp1252 Windows console; valid news copy (U+2011,
+    # curly quotes, em dash) crashed the runner's own print statements.
+    from scripts import india_daily_roundup, india_daily_video
+
+    for module in (india_daily_roundup, india_daily_video):
+        assert hasattr(module, "_force_utf8_console")
+        buffer = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with mock.patch.object(module.sys, "stdout", buffer):
+            module._force_utf8_console()
+        assert buffer.encoding.lower().replace("-", "") == "utf8"
+        # And the payload it exists for must encode cleanly.
+        buffer.reconfigure(encoding="utf-8", errors="replace")
+        buffer.write("Rupee \u20b9 \u2011 \u201cquoted\u201d \u2014 \u2026")
+        buffer.flush()
 
 
 def test_render_props_create_one_sequence_per_news_card() -> None:

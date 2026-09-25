@@ -85,6 +85,20 @@ _UNSAFE_QUERY_TERMS = {
 }
 
 
+def _force_utf8_console() -> None:
+    """Make stdout/stderr UTF-8 so valid news text can never crash a print.
+
+    A Windows console defaults to cp1252, which cannot encode characters that
+    appear in ordinary rewritten copy (U+2011 non-breaking hyphen, curly
+    quotes, em dashes). Printing one of those raises UnicodeEncodeError and
+    kills the run after the work has already succeeded.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _load_env(path: Path) -> None:
     if not path.is_file():
         return
@@ -584,6 +598,7 @@ def _render(props_path: Path, project: Path) -> Path:
 
 
 def main() -> int:
+    _force_utf8_console()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--project", type=Path,

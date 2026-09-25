@@ -172,15 +172,35 @@ _PAKISTAN_PUNJAB_RE = re.compile(
     r"punjab\s+province|punjab\s*,\s*pakistan|pakistan'?s?\s+punjab"
 )
 
+# Several outlets append their own masthead to the RSS headline
+# ("... Key Nepal Routes | HT India"). That publisher tag supplies the word
+# "india" to every single one of their items, which would silently satisfy the
+# India-context check and let any foreign story through. Drop a short trailing
+# " | Tag" / " - Tag" segment before the location test.
+_PUBLISHER_SUFFIX_RE = re.compile(r"\s*[|\u2013\u2014-]\s*[^|\u2013\u2014-]{1,32}$")
+
+
+def _strip_publisher_suffix(title: str) -> str:
+    """Remove a short trailing publisher/byline tag from a headline."""
+    match = _PUBLISHER_SUFFIX_RE.search(title or "")
+    if not match:
+        return title or ""
+    tail = match.group(0).lstrip(" |\u2013\u2014-").strip()
+    # Only drop it if it reads like a masthead, not like real headline text.
+    if not tail or len(tail.split()) > 4:
+        return title or ""
+    return title[: match.start()].strip()
+
 
 def _is_india_related(title: str, summary: str = "") -> bool:
     """Reject foreign-only incidents from Indian publisher feeds.
 
-    Publisher location is not story location. A title explicitly centered on
-    a foreign place/event is rejected unless its own text supplies a clear
+    Publisher location is not story location, and neither is the publisher's
+    own masthead glued onto the headline. A title explicitly centered on a
+    foreign place/event is rejected unless its own text supplies a clear
     India, Indian, or domestic-policy connection.
     """
-    hay = f"{title} {summary}".lower()
+    hay = f"{_strip_publisher_suffix(title)} {summary}".lower()
     india_hits = [key for key in INDIA_CONTEXT_KEYWORDS if key in hay]
     if _PAKISTAN_PUNJAB_RE.search(hay):
         # Pakistan's Punjab province is not India's Punjab state.
