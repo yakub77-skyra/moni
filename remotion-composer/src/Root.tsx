@@ -136,11 +136,14 @@ const calculateMetadata: CalculateMetadataFunction<ExplainerProps> = async ({
 const calculateIndiaDailyNewsMetadata: CalculateMetadataFunction<IndiaDailyNewsProps> =
   async ({ props }) => {
     const cards = props.cards || [];
-    const storyFrames = cards.reduce(
-      (total, card) => total + (card.durationInFrames || 0),
+    // No end card: the video ends on the last story card. The length is the
+    // last card's END, not the sum of durations: the first card starts after
+    // a short leading pad, so a sum would cut the tail off.
+    const total = cards.reduce(
+      (end, card) =>
+        Math.max(end, (card.fromFrame || 0) + (card.durationInFrames || 0)),
       0,
     );
-    const total = storyFrames + (props.endCardFrames || 120);
     return { durationInFrames: Math.max(30, total) };
   };
 
@@ -319,8 +322,6 @@ export const Root: React.FC = () => {
           cards: [],
           audioSrc: "",
           mapPathsSrc: "india-daily-news/state-paths.json",
-          sources: [],
-          endCardFrames: 120,
           durationInFrames: 30 * 60,
         }}
         calculateMetadata={calculateIndiaDailyNewsMetadata}

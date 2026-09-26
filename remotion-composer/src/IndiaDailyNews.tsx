@@ -39,17 +39,10 @@ export interface IndiaDailyNewsCard {
   fromFrame: number;
 }
 
-export interface IndiaDailyNewsSource {
-  outlet: string;
-  url: string;
-}
-
 export type IndiaDailyNewsProps = {
   cards: IndiaDailyNewsCard[];
   audioSrc: string;
   mapPathsSrc: string;
-  sources: IndiaDailyNewsSource[];
-  endCardFrames: number;
   durationInFrames: number;
 };
 
@@ -223,6 +216,33 @@ const MapCard: React.FC<{
           boxShadow: `0 0 24px rgba(198,255,0,0.35)`,
         }}
       >
+        {/* Outlet chip: a channel-bug tag on the photo, so the card reads as
+            an edited news graphic rather than a plain caption. */}
+        <div
+          style={{
+            position: "absolute",
+            left: 14,
+            top: 14,
+            zIndex: 2,
+            backgroundColor: "#111111",
+            borderRadius: 20,
+            padding: "8px 18px",
+            border: `2px solid ${NEON}`,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+          }}
+        >
+          <span
+            style={{
+              color: "#FFFFFF",
+              fontSize: 19,
+              fontWeight: 800,
+              letterSpacing: 1.5,
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            {(card.outlet_name || card.outlet).toUpperCase()}
+          </span>
+        </div>
         {card.imageSrc ? (
           // The real news photograph, with a slow push so a still does not
           // read as a frozen slideshow frame.
@@ -270,7 +290,8 @@ const MapCard: React.FC<{
         />
       </svg>
 
-      {/* Headline bar */}
+      {/* Headline bar: neon top edge + lift shadow so it sits on the photo
+          as a designed lower third, not a flat caption box. */}
       <div
         style={{
           position: "absolute",
@@ -280,6 +301,8 @@ const MapCard: React.FC<{
           opacity: headlineIn,
           transform: `translateY(${(1 - headlineIn) * 20}px)`,
           backgroundColor: "#FFFFFF",
+          borderTop: `6px solid ${NEON}`,
+          boxShadow: "0 12px 32px rgba(0,0,0,0.55)",
           padding: "16px 20px",
         }}
       >
@@ -306,7 +329,8 @@ const MapCard: React.FC<{
             fontFamily: "system-ui, sans-serif",
           }}
         >
-          {card.outlet_name || card.outlet} • {card.state}
+          {/* The outlet rides on the photo chip; the bar names the place. */}
+          {card.state}
         </div>
         {card.imageCredit ? (
           // Attribution for the publisher's photograph. Crediting the source
@@ -375,83 +399,12 @@ const MapCard: React.FC<{
 };
 
 // ---------------------------------------------------------------------------
-// Source end card: every outlet + URL (manifest success criterion).
-// ---------------------------------------------------------------------------
-const SourceEndCard: React.FC<{ sources: IndiaDailyNewsSource[] }> = ({
-  sources,
-}) => {
-  const frame = useCurrentFrame();
-  const opacity = interpolate(frame, [0, 10], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
-  return (
-    <AbsoluteFill
-      style={{
-        backgroundColor: "#0A0C0F",
-        opacity,
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        padding: "0 56px",
-      }}
-    >
-      <div
-        style={{
-          color: NEON,
-          fontSize: 34,
-          fontWeight: 800,
-          fontFamily: "system-ui, sans-serif",
-          letterSpacing: 4,
-          marginBottom: 28,
-        }}
-      >
-        SOURCES
-      </div>
-      {sources.map((source, index) => (
-        <div key={index} style={{ marginBottom: 22 }}>
-          <div
-            style={{
-              color: "#FFF",
-              fontSize: 28,
-              fontWeight: 700,
-              fontFamily: "system-ui, sans-serif",
-            }}
-          >
-            {index + 1}. {source.outlet}
-          </div>
-          <div
-            style={{
-              color: "#9AA0A6",
-              fontSize: 19,
-              fontFamily: "system-ui, sans-serif",
-              wordBreak: "break-all",
-            }}
-          >
-            {source.url}
-          </div>
-        </div>
-      ))}
-      <div
-        style={{
-          marginTop: 36,
-          color: "#FFF",
-          fontSize: 24,
-          fontWeight: 700,
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
-        @INDIAINLAST24HR • follow for daily news
-      </div>
-    </AbsoluteFill>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Root composition component.
+// Root composition component. The video ends on the last story card: there
+// is no sources end card. On-screen attribution lives on each card
+// ("Photo: <outlet>"), and the post caption carries the article links.
 // ---------------------------------------------------------------------------
 export const IndiaDailyNews: React.FC<IndiaDailyNewsProps> = (props) => {
-  const { cards, audioSrc, mapPathsSrc, sources, endCardFrames } = props;
+  const { cards, audioSrc, mapPathsSrc } = props;
   const [map, setMap] = useState<MapData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [handle] = useState(() => delayRender("india-map-load"));
@@ -513,11 +466,6 @@ export const IndiaDailyNews: React.FC<IndiaDailyNewsProps> = (props) => {
     return null;
   }
 
-  const storyFrames = cards.reduce(
-    (total, card) => total + card.durationInFrames,
-    0,
-  );
-
   return (
     <AbsoluteFill style={{ backgroundColor: "#0A0C0F" }}>
       {audioSrc ? <Audio src={resolveAsset(audioSrc)} /> : null}
@@ -531,13 +479,6 @@ export const IndiaDailyNews: React.FC<IndiaDailyNewsProps> = (props) => {
           <MapCard card={card} map={map} />
         </Sequence>
       ))}
-      <Sequence
-        from={storyFrames}
-        durationInFrames={endCardFrames}
-        name="sources"
-      >
-        <SourceEndCard sources={sources} />
-      </Sequence>
     </AbsoluteFill>
   );
 };

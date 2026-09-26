@@ -396,13 +396,14 @@ def build_render_props(
 
     Contract (locked): one sequence per card driven by the real per-card
     narration timing, plus ONE assembled narration track at `audioSrc`.
-    `audio_src` is the public/-relative path of the assembled narration.wav.
+    The video ends on the last story card; there is deliberately no sources
+    end card. On-screen attribution lives on each card, and the article
+    links are written to caption.txt for the post.
     A card may carry `narration_offset` (its speech start in the assembled
     track) and `audio_total_seconds` (the assembled track length); when the
     last card has it, frame spans are pinned to the real audio so picture and
     narration can neither drift nor let audio outlive the final card.
     """
-    end_card_frames = FPS * 4
     offsets = [card.get("narration_offset") for card in cards]
     locked = bool(cards) and all(offset is not None for offset in offsets)
     timed_cards: list[dict[str, Any]] = []
@@ -449,20 +450,44 @@ def build_render_props(
         "fps": FPS,
         "cards": timed_cards,
         "audioSrc": audio_src,
-        "sources": [
-            {
-                "outlet": card.get("outlet_name") or card.get("outlet", ""),
-                "url": card.get("source_url", ""),
-            }
-            for card in timed_cards
-        ],
-        "endCardFrames": end_card_frames,
-        "durationInFrames": cursor + end_card_frames,
+        "durationInFrames": cursor,
         "boundaryAttribution": {
             "license": MAP_LICENSE,
             "source": MAP_SOURCE,
         },
     }
+
+
+def write_caption(
+    cards: list[dict[str, Any]], path: Path, handle: str = "@INDIAINLAST24HR"
+) -> Path:
+    """Post caption with hashtags plus the per-story article links.
+
+    The video carries no sources end card, so this file is where the links
+    live for the human publishing the post.
+    """
+    lines = [
+        "🇮🇳 India in the last 24 hours",
+        "",
+        *[
+            f"{index}. {card.get('headline', '').strip()} "
+            f"({card.get('outlet_name') or card.get('outlet', '')})"
+            for index, card in enumerate(cards, start=1)
+        ],
+        "",
+        "Sources:",
+        *[
+            f"{index}. {card.get('outlet_name') or card.get('outlet', '')}: "
+            f"{card.get('source_url', '')}"
+            for index, card in enumerate(cards, start=1)
+        ],
+        "",
+        "#indianews #news #india #dailynews #currentaffairs",
+        f"Follow {handle} for daily news",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def _download_map(path: Path) -> None:
@@ -818,8 +843,10 @@ def _run_assets(
     props_path.write_text(
         json.dumps(props, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    caption_path = write_caption(enriched, props_dir / "caption.txt")
     print(f"ASSETS READY: {props_path}")
     print(f"NARRATION: {narration_path} ({assembly['duration']}s)")
+    print(f"CAPTION: {caption_path}")
     return props_path
 
 

@@ -1,11 +1,12 @@
 name: india-in-last-24hr
 version: "1.0"
-description: >
-  Daily vertical India news roundup in map-card style. Free RSS scraper
-  (Indian outlets only) ranks 5 fresh stories, OpenRouter free model rewrites
-  them, visuals come only from re-licensed stock or generated maps, and the
-  compose stage recreates the reference look: dark India map, one highlighted
-  state, neon connector, dashed media card, headline bar, source end card.
+  description: >
+    Daily vertical India news roundup in map-card style. Free RSS scraper
+    (Indian outlets only) ranks 5 fresh stories, OpenRouter free model rewrites
+    them, each card shows the outlet's own lead photo (credited, article
+    linked in the post caption), and the compose stage recreates the
+    reference look: dark India map, one highlighted state, neon connector,
+    dashed media card, headline bar. The video ends on the last story card.
 category: documentary
 stability: beta
 default_checkpoint_policy: guided
@@ -61,7 +62,8 @@ stages:
       - Exactly 5 stories selected, each with outlet + source_url + state
       - All stories within the lookback window (default 24h)
       - Visual plan uses the outlet's own lead photo per story, credited on
-        the card and linked on the end card; stock only as a fallback
+        the card with the article URL kept for the post caption; stock only
+        as a fallback
     success_criteria:
       - Schema-valid brief artifact
       - brief.metadata.stories has 5 entries with source URLs
@@ -108,8 +110,8 @@ stages:
       - Narration audio exists per card (Piper offline default)
       - Background music licensed via Pixabay/Freesound only
       - Every visual asset has provenance (provider, license, URL)
-      - Each publisher photo carries a visible on-card credit, and its
-        article URL appears on the end card
+      - Each publisher photo carries a visible on-card credit ("Photo:
+        <outlet>"), and its article URL goes into caption.txt for the post
     success_criteria:
       - Schema-valid asset_manifest artifact
       - One narration asset per script section
@@ -125,9 +127,9 @@ stages:
     checkpoint_required: true
     human_approval_default: true
     review_focus:
-      - 720x1280 vertical timeline, 5 map cards + intro + end card
+      - 720x1280 vertical timeline, 5 map cards, ending on the last card
       - Cuts follow narration timing, no two adjacent cards share a state
-      - End card lists all 5 source outlets + URLs
+      - caption.txt lists all 5 source outlets + article URLs for the post
     success_criteria:
       - Schema-valid edit_decisions artifact
       - Timeline within 10% of script total duration
@@ -156,7 +158,7 @@ stages:
     review_focus:
       - 720x1280 output passes ffprobe validation
       - Map-card style matches india-last-24hr-map playbook
-      - Music mixed under narration, end card readable for 4s
+      - Music mixed under narration, video ends on the last story card
     success_criteria:
       - Schema-valid render_report artifact
       - Output file exists and passes ffprobe validation

@@ -23,6 +23,7 @@ from scripts.india_daily_video import (
     normalize_for_tts,
     sanitize_visual_query,
     sapi_powershell_script,
+    write_caption,
 )
 from tools.news.india_news_scraper import _is_india_related
 from tools.news.openrouter_scriptwriter import OpenRouterScriptwriter
@@ -422,7 +423,7 @@ def test_stock_used_only_when_publisher_photo_unavailable(
     assert pexels.queries, "stock fallback should have been attempted"
 
 
-def test_render_props_create_one_sequence_per_news_card() -> None:
+def test_render_props_create_one_sequence_per_news_card(tmp_path: Path) -> None:
     cards = [
         {
             "rank": rank,
@@ -446,12 +447,19 @@ def test_render_props_create_one_sequence_per_news_card() -> None:
     assert props["cards"][0]["durationInFrames"] == 90
     assert props["cards"][-1]["durationInFrames"] == 210
     assert props["audioSrc"] == "E:/OpenMontage/projects/test/assets/narration.wav"
-    assert props["durationInFrames"] == 120 + sum(card["durationInFrames"] for card in props["cards"])
+    assert props["durationInFrames"] == sum(
+        card["durationInFrames"] for card in props["cards"]
+    )
+    # No end card: the video ends on the last story card, so the total is
+    # exactly the cards. Article links live in caption.txt instead.
+    assert "endCardFrames" not in props
+    assert "sources" not in props
     assert all("lead_image" not in card for card in props["cards"])
-    # Single-contract: one end card sources list for the source end card.
-    assert [s["outlet"] for s in props["sources"]] == ["Example News"] * 5
-    assert props["sources"][0]["url"] == "https://example.com/1"
-    assert props["endCardFrames"] == 120
+    caption = write_caption(props["cards"], tmp_path / "caption.txt")
+    text = caption.read_text(encoding="utf-8")
+    for rank in range(1, 6):
+        assert f"https://example.com/{rank}" in text
+    assert "#indianews" in text and "@INDIAINLAST24HR" in text
 
 
 def test_geo_projection_emits_scene_ready_paths() -> None:
@@ -554,10 +562,9 @@ def test_assembled_narration_sums_segments_plus_pads(tmp_path: Path) -> None:
         "india-daily-news/narration.wav",
     )
     assert [c["fromFrame"] for c in props["cards"]] == [8, 81]
-    story_frames = props["durationInFrames"] - props["endCardFrames"]
     # The picture must cover the whole assembled track (within one frame of
     # rounding): otherwise narration runs past the last card.
-    assert abs(story_frames / 30 - assembly["duration"]) <= 1 / 30 + 0.01
+    assert abs(props["durationInFrames"] / 30 - assembly["duration"]) <= 1 / 30 + 0.01
     assert props["audioSrc"] == "india-daily-news/narration.wav"
 
 
