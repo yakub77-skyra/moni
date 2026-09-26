@@ -216,6 +216,9 @@ const MapCard: React.FC<{
         }}
       >
         {card.clipSrc ? (
+          // OffthreadVideo (not <Video loop>) on purpose: it is frame-accurate
+          // and deterministic. A clip shorter than its card simply holds its
+          // last frame rather than looping, which keeps renders reproducible.
           <OffthreadVideo
             src={resolveAsset(card.clipSrc)}
             muted
@@ -413,6 +416,7 @@ const SourceEndCard: React.FC<{ sources: IndiaDailyNewsSource[] }> = ({
 export const IndiaDailyNews: React.FC<IndiaDailyNewsProps> = (props) => {
   const { cards, audioSrc, mapPathsSrc, sources, endCardFrames } = props;
   const [map, setMap] = useState<MapData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [handle] = useState(() => delayRender("india-map-load"));
 
   useEffect(() => {
@@ -420,7 +424,7 @@ export const IndiaDailyNews: React.FC<IndiaDailyNewsProps> = (props) => {
     fetch(staticFile(mapPathsSrc))
       .then((response) => {
         if (!response.ok) {
-          throw new Error(`map fetch failed: ${response.status}`);
+          throw new Error(`map fetch failed: HTTP ${response.status}`);
         }
         return response.json();
       })
@@ -430,14 +434,43 @@ export const IndiaDailyNews: React.FC<IndiaDailyNewsProps> = (props) => {
           continueRender(handle);
         }
       })
-      .catch((error) => {
-        // Fail loudly: a map-less render would silently break the format.
-        throw error;
+      .catch((error: Error) => {
+        if (cancelled) {
+          return;
+        }
+        // Release the render and show the reason on the frame. Throwing here
+        // instead would leave delayRender pending and Remotion would only
+        // report an opaque 30s timeout.
+        setLoadError(error.message);
+        continueRender(handle);
       });
     return () => {
       cancelled = true;
     };
   }, [mapPathsSrc, handle]);
+
+  if (loadError) {
+    return (
+      <AbsoluteFill
+        style={{
+          backgroundColor: "#0A0C0F",
+          color: "#FF6B6B",
+          padding: 48,
+          fontFamily: "system-ui, sans-serif",
+          fontSize: 30,
+          lineHeight: 1.4,
+        }}
+      >
+        <div style={{ color: NEON, fontWeight: 800, marginBottom: 16 }}>
+          MAP LOAD FAILED
+        </div>
+        <div>{loadError}</div>
+        <div style={{ color: "#9AA0A6", fontSize: 22, marginTop: 16 }}>
+          mapPathsSrc: {mapPathsSrc}
+        </div>
+      </AbsoluteFill>
+    );
+  }
 
   if (!map) {
     return null;

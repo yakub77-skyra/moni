@@ -1,4 +1,4 @@
-"""Build licensed assets and Remotion props for the India daily-news video.
+﻿"""Build licensed assets and Remotion props for the India daily-news video.
 
 All network costs are zero: public RSS, OpenRouter's free router, Pexels'
 free API, and local Windows SAPI narration. Publisher lead images remain
@@ -50,6 +50,8 @@ FOCUS_X = 360
 FOCUS_Y = 760
 PAN_LIMIT_X = 120
 PAN_LIMIT_Y = 150
+# Last-resort stock query when a story-specific search has no portrait match.
+FALLBACK_VISUAL_QUERY = "India city skyline"
 # Silence pads around each card in the assembled narration track.
 PAD_BEFORE_SECONDS = 0.25
 PAD_BETWEEN_SECONDS = 0.45
@@ -58,22 +60,16 @@ FFMPEG = REPO_ROOT / "bin" / "ffmpeg.exe"
 FFPROBE = REPO_ROOT / "bin" / "ffprobe.exe"
 
 
-def _ffmpeg() -> str:
+def _ffmpeg() -> str | None:
     if FFMPEG.is_file():
         return str(FFMPEG)
-    found = shutil.which("ffmpeg")
-    if not found:
-        raise RuntimeError("ffmpeg not found (bin/ffmpeg.exe or PATH)")
-    return found
+    return shutil.which("ffmpeg")
 
 
-def _ffprobe() -> str:
+def _ffprobe() -> str | None:
     if FFPROBE.is_file():
         return str(FFPROBE)
-    found = shutil.which("ffprobe")
-    if not found:
-        raise RuntimeError("ffprobe not found (bin/ffprobe.exe or PATH)")
-    return found
+    return shutil.which("ffprobe")
 
 
 _UNSAFE_QUERY_TERMS = {
@@ -122,58 +118,179 @@ def sanitize_visual_query(query: str) -> str:
         if token not in safe:
             safe.append(token)
     if not safe:
-        return "India news city skyline"
+        return FALLBACK_VISUAL_QUERY
     result = " ".join(safe[:8])
     return result if "india" in result.lower() else f"{result} India"
+
+
+def normalize_for_tts(text: str) -> str:
+    """Fold typographic characters SAPI mispronounces (or skips) to ASCII.
+
+    Rewritten news copy is full of non-breaking hyphens, curly quotes, em
+    dashes and the rupee sign. Left alone, a synthesiser may read them as
+    nothing at all, silently dropping words from the narration.
+    """
+    replacements = {
+        "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-",
+        "\u2014": " - ", "\u2015": " - ", "\u2212": "-",
+        "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+        "\u201c": '"', "\u201d": '"', "\u201e": '"',
+        "\u2026": "...", "\u00a0": " ", "\u200b": "",
+        "\u20b9": " rupees ", "\u20bd": " euros ",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+def sapi_powershell_script() -> str:
+    """The PowerShell that drives System.Speech, with a voice fallback.
+
+    Runner images do not guarantee "Microsoft Zira Desktop" exists, and
+    SelectVoice throws on a missing name, so fall back to the first enabled
+    voice and report which one was actually used.
+    """
+    return (
+        "Add-Type -AssemblyName System.Speech; "
+        "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+        "$s.Rate=1; "
+        "$name=$env:INDIA_NEWS_VOICE; "
+        "try { $s.SelectVoice($name) } catch { "
+        "  $v=$s.GetInstalledVoices() | Where-Object { $_.Enabled } | "
+        "Select-Object -First 1; "
+        "  if ($v) { $s.SelectVoice($v.VoiceInfo.Name); $name=$v.VoiceInfo.Name } "
+        "  else { $name='' } "
+        "}; "
+        "if ($name) { Write-Output ('SAPI_VOICE=' + $name) }; "
+        "$s.SetOutputToWaveFile($env:INDIA_NEWS_OUTPUT); "
+        "$s.Speak($env:INDIA_NEWS_TEXT); $s.Dispose()"
+    )
 
 
 def narrate_with_sapi(
     text: str,
     output_path: Path,
-    run: Callable[[list[str], dict[str, str]], None] | None = None,
+    run: Callable[[list[str], dict[str, str]], Any] | None = None,
 ) -> dict[str, Any]:
     """Create WAV narration with the local Windows SAPI voice (no API charge)."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     command_run = run or (
-        lambda command, env: subprocess.run(command, env=env, check=True)
+        lambda command, env: subprocess.run(
+            command, env=env, check=True, capture_output=True, text=True
+        )
     )
+    spoken = normalize_for_tts(text)
     env = os.environ.copy()
-    env["INDIA_NEWS_TEXT"] = text
+    env["INDIA_NEWS_TEXT"] = spoken
     env["INDIA_NEWS_OUTPUT"] = str(output_path)
     env["INDIA_NEWS_VOICE"] = VOICE_NAME
-    ps_script = (
-        "Add-Type -AssemblyName System.Speech; "
-        "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        "$s.SelectVoice($env:INDIA_NEWS_VOICE); "
-        "$s.Rate=1; $s.SetOutputToWaveFile($env:INDIA_NEWS_OUTPUT); "
-        "$s.Speak($env:INDIA_NEWS_TEXT); $s.Dispose()"
-    )
-    command_run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+    completed = command_run(
+        [
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            sapi_powershell_script(),
+        ],
         env,
     )
     if not output_path.is_file() or output_path.stat().st_size < 44:
-        raise RuntimeError(f"SAPI did not create a WAV file: {output_path}")
-    return {"provider": "windows_sapi", "voice": VOICE_NAME, "cost_usd": 0.0}
+        raise RuntimeError(
+            f"SAPI did not create a WAV file: {output_path} "
+            "(no usable Windows speech voice on this machine?)"
+        )
+    voice = VOICE_NAME
+    stdout = getattr(completed, "stdout", "") or ""
+    for line in str(stdout).splitlines():
+        if line.strip().startswith("SAPI_VOICE="):
+            voice = line.split("=", 1)[1].strip() or VOICE_NAME
+    return {"provider": "windows_sapi", "voice": voice, "cost_usd": 0.0}
 
 
-def _media_duration(path: Path) -> float:
-    result = subprocess.run(
-        [
-            _ffprobe(), "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=nw=1:nk=1", str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return float(result.stdout.strip())
+def _media_duration(path: Path) -> float | None:
+    """Duration in seconds via ffprobe, or None when it is unavailable.
+
+    Best effort on purpose: the only caller records an informational
+    provenance field that nothing downstream reads, so a missing ffprobe
+    must not be able to fail the run. (Do not reintroduce a hard failure
+    here, and do not hand-roll an MP4 parser for it -- real stock clips are
+    fragmented MP4, whose duration lives in moof/trun, not mvhd.)
+    """
+    probe = _ffprobe()
+    if probe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                probe, "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1", str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(result.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError, OSError):
+        return None
 
 
 def _wav_duration(path: Path) -> float:
     """Read a WAV duration from its header (no subprocess needed)."""
     with wave.open(str(path), "rb") as handle:
         return handle.getnframes() / float(handle.getframerate() or 1)
+
+
+def _concat_wavs(
+    audio_paths: list[Path],
+    output_path: Path,
+    pad_before: float,
+    pad_between: float,
+) -> dict[str, Any] | None:
+    """Pure-stdlib WAV concat with silence pads. Returns None if formats differ.
+
+    SAPI emits one consistent PCM format per machine, so this covers the real
+    case and removes ffmpeg as a hard requirement for the audio stage.
+    """
+    params: tuple[int, int, int] | None = None
+    payload: list[bytes] = []
+    segments: list[dict[str, Any]] = []
+    cursor = pad_before
+    for index, path in enumerate(audio_paths):
+        with wave.open(str(path), "rb") as handle:
+            current = (
+                handle.getnchannels(), handle.getsampwidth(), handle.getframerate()
+            )
+            if params is None:
+                params = current
+            elif current != params:
+                return None
+            frames = handle.readframes(handle.getnframes())
+        if params is None:
+            return None
+        rate, width, channels = params[2], params[1], params[0]
+        frame_size = width * channels
+        # One leading pad before the first segment, one gap between segments;
+        # the trailing pad is appended once after the last one.
+        lead = pad_before if index == 0 else pad_between
+        payload.append(b"\x00" * (int(round(lead * rate)) * frame_size))
+        payload.append(frames)
+        duration = len(frames) / float(rate * frame_size)
+        segments.append({
+            "path": path.name,
+            "start": round(cursor, 3),
+            "duration": round(duration, 3),
+        })
+        cursor += duration + pad_between
+    if params is None:
+        return None
+    tail = b"\x00" * (int(round(pad_before * params[2])) * params[1] * params[0])
+    with wave.open(str(output_path), "wb") as handle:
+        handle.setnchannels(params[0])
+        handle.setsampwidth(params[1])
+        handle.setframerate(params[2])
+        handle.writeframes(b"".join(payload) + tail)
+    return {
+        "duration": _wav_duration(output_path),
+        "segments": segments,
+        "method": "python-wave",
+    }
 
 
 def assemble_narration(
@@ -185,7 +302,7 @@ def assemble_narration(
     """Concat per-card WAVs into ONE narration track with silence pads.
 
     Returns per-card offsets so frame timing can follow the real audio:
-    {"duration": total_seconds, "segments": [{"path":..., "start":..., "duration":...}]}.
+    {"duration", "segments": [{"path", "start", "duration"}], "method"}.
     """
     if not audio_paths:
         raise ValueError("assemble_narration needs at least one audio file")
@@ -193,6 +310,18 @@ def assemble_narration(
         if not path.is_file():
             raise FileNotFoundError(f"missing narration segment: {path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    ffmpeg = _ffmpeg()
+    if ffmpeg is None:
+        # No ffmpeg on this machine (bare CI runner, minimal container).
+        result = _concat_wavs(audio_paths, output_path, pad_before, pad_between)
+        if result is not None:
+            return result
+        raise RuntimeError(
+            "ffmpeg not found and the narration segments are not a single "
+            "WAV format, so they cannot be joined without it "
+            "(install ffmpeg or make SAPI emit one format)"
+        )
 
     inputs: list[str] = []
     filters: list[str] = []
@@ -220,7 +349,7 @@ def assemble_narration(
     filter_graph += f"amix=inputs={len(audio_paths)}:normalize=0:duration=longest,"
     filter_graph += f"apad=whole_dur={total:.3f},atrim=0:{total:.3f}[mix]"
     result = subprocess.run(
-        [_ffmpeg(), "-y", *inputs,
+        [ffmpeg, "-y", *inputs,
          "-filter_complex", filter_graph, "-map", "[mix]",
          "-ar", "44100", "-ac", "2", str(output_path)],
         capture_output=True,
@@ -229,7 +358,11 @@ def assemble_narration(
     if result.returncode != 0 or not output_path.is_file():
         raise RuntimeError(f"ffmpeg concat failed: {result.stderr[-1500:]}")
     actual = _media_duration(output_path)
-    return {"duration": round(actual, 3), "segments": segments}
+    return {
+        "duration": round(actual, 3),
+        "segments": segments,
+        "method": "ffmpeg",
+    }
 
 
 def card_timings(
@@ -505,14 +638,37 @@ def _run_assets(
                 "output_path": str(clip_path),
             })
             if not result.success:
-                raise RuntimeError(f"Pexels rank {rank}: {result.error}")
-            card["visual_license"] = result.data.get(
-                "license", "Pexels License"
-            )
-            card["visual_source"] = result.data.get("pexels_url", "")
+                # A narrow story query often has no portrait HD match. Retry
+                # once with generic Indian B-roll before giving up on the shot.
+                result = pexels.execute({
+                    "query": FALLBACK_VISUAL_QUERY,
+                    "per_page": 5,
+                    "orientation": "portrait",
+                    "min_duration": 6,
+                    "preferred_quality": "hd",
+                    "output_path": str(clip_path),
+                })
+            if result.success:
+                card["visual_license"] = result.data.get(
+                    "license", "Pexels License"
+                )
+                card["visual_source"] = result.data.get("pexels_url", "")
+            else:
+                # Last resort: ship the card without footage. The scene renders
+                # an empty dashed frame, which beats losing the whole episode.
+                card["visual_license"] = "none"
+                card["visual_source"] = ""
+                card["visual_missing_reason"] = str(result.error)[:200]
+                print(f"WARN rank {rank}: no stock clip ({result.error})")
         card.setdefault("visual_license", "Pexels License")
-        card["clip_src"] = f"india-daily-news/{clip_name}"
-        card["clip_duration"] = _media_duration(clip_path)
+        if clip_path.is_file():
+            card["clip_src"] = f"india-daily-news/{clip_name}"
+            # Informational provenance only: never let a probe failure stop the run.
+            clip_duration = _media_duration(clip_path)
+            if clip_duration is not None:
+                card["clip_duration"] = round(clip_duration, 3)
+        else:
+            card["clip_src"] = ""
 
         audio_name = f"audio-{rank:02d}.wav"
         audio_path = media_dir / audio_name
@@ -553,7 +709,10 @@ def _run_assets(
     )
     props = build_render_props(enriched, "india-daily-news/narration.wav")
     props["mapPathsSrc"] = "india-daily-news/state-paths.json"
-    props_path = project / "artifacts" / "render-props.json"
+    # Do not assume the roundup stage already created artifacts/.
+    props_dir = project / "artifacts"
+    props_dir.mkdir(parents=True, exist_ok=True)
+    props_path = props_dir / "render-props.json"
     props_path.write_text(
         json.dumps(props, indent=2, ensure_ascii=False), encoding="utf-8"
     )

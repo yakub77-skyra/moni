@@ -1,19 +1,26 @@
-"""Contracts for the zero-cost India daily-news source and render runner."""
+﻿"""Contracts for the zero-cost India daily-news source and render runner."""
 
 from __future__ import annotations
 
 import io
 import json
+import sys
 import wave
 from pathlib import Path
 from unittest import mock
 
 from scripts.india_daily_video import (
+    FALLBACK_VISUAL_QUERY,
+    _media_duration,
+    _run_assets,
     assemble_narration,
     build_render_props,
     card_timings,
     geojson_to_svg_paths,
     narrate_with_sapi,
+    normalize_for_tts,
+    sanitize_visual_query,
+    sapi_powershell_script,
 )
 from tools.news.india_news_scraper import _is_india_related
 from tools.news.openrouter_scriptwriter import OpenRouterScriptwriter
@@ -94,6 +101,151 @@ def test_runners_force_utf8_console() -> None:
         buffer.reconfigure(encoding="utf-8", errors="replace")
         buffer.write("Rupee \u20b9 \u2011 \u201cquoted\u201d \u2014 \u2026")
         buffer.flush()
+
+
+def test_clip_duration_probe_never_fails_the_run(tmp_path: Path) -> None:
+    # clip_duration is informational provenance that nothing downstream reads,
+    # so a missing ffprobe must yield None rather than raise. (Real stock
+    # clips are fragmented MP4, so hand-rolling a duration parser here would
+    # be a large, fragile addition for a field nobody consumes.)
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"not really an mp4")
+
+    with mock.patch("scripts.india_daily_video._ffprobe", return_value=None):
+        assert _media_duration(clip) is None
+    with mock.patch("scripts.india_daily_video._ffprobe", return_value=None):
+        # and the probe helper itself is importable/removed
+        assert not hasattr(sys.modules["scripts.india_daily_video"], "_mp4_duration")
+
+
+def test_assemble_narration_works_without_ffmpeg(tmp_path: Path) -> None:
+    first = tmp_path / "audio-01.wav"
+    second = tmp_path / "audio-02.wav"
+    _write_silence_wav(first, 2.0)
+    _write_silence_wav(second, 3.0)
+    output = tmp_path / "narration.wav"
+
+    with mock.patch("scripts.india_daily_video._ffmpeg", return_value=None):
+        assembly = assemble_narration([first, second], output)
+
+    assert assembly["method"] == "python-wave"
+    assert [s["duration"] for s in assembly["segments"]] == [2.0, 3.0]
+    assert assembly["segments"][1]["start"] == 0.25 + 2.0 + 0.45
+    assert abs(assembly["duration"] - (0.25 + 2.0 + 0.45 + 3.0 + 0.25)) <= 0.02
+
+
+def test_normalize_for_tts_folds_typographic_characters() -> None:
+    # Unfolded, SAPI silently drops words: a non-breaking hyphen reads as
+    # nothing at all.
+    folded = normalize_for_tts(
+        "Floods \u2011 hit routes \u2014 the \u201cnext\u201d day \u20b93"
+    )
+    for char in "\u2011\u2014\u201c\u201d\u20b9":
+        assert char not in folded
+    assert " - " in folded
+    assert "rupees" in folded
+
+
+def test_sapi_falls_back_when_preferred_voice_is_absent() -> None:
+    recorded: dict[str, str] = {}
+
+    def fake_run(command: list[str], env: dict[str, str]) -> object:
+        recorded.update(env)
+        with wave.open(env["INDIA_NEWS_OUTPUT"], "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16000)
+            handle.writeframes(b"\x00\x00" * 800)
+
+        class Result:
+            stdout = "SAPI_VOICE=Microsoft David Desktop"
+
+        return Result()
+
+    meta = narrate_with_sapi("Floods \u2011 hit routes", Path("unused"), run=fake_run)
+
+    # The PowerShell must try a fallback voice, not trust SelectVoice blindly.
+    script = sapi_powershell_script()
+    assert "GetInstalledVoices" in script
+    assert "try { $s.SelectVoice($name) } catch" in script
+    assert meta["voice"] == "Microsoft David Desktop"
+
+
+def test_missing_stock_clip_degrades_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    # A narrow story query with no portrait HD match must not lose the episode.
+    from tools.base_tool import ToolResult
+
+    calls: list[str] = []
+
+    class FakePexels:
+        def execute(self, params):
+            calls.append(params["query"])
+            return ToolResult(success=False, error="no results")
+
+    cards = [{
+        "rank": 1, "state": "Kerala", "outlet": "X", "headline": "h",
+        "narration": "n", "source_url": "https://e/1",
+        "visual_query": "Kerala something very specific",
+    }]
+    cards_path = tmp_path / "cards.json"
+    cards_path.write_text(
+        json.dumps({"cards": cards}), encoding="utf-8"
+    )
+
+    class FakeRegistry:
+        def get(self, name):
+            assert name == "pexels_video"
+            return FakePexels()
+
+    with mock.patch("scripts.india_daily_video.narrate_with_sapi") as narrate:
+        def fake_narrate(text, path, run=None):
+            with wave.open(str(path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(16000)
+                handle.writeframes(b"\x00\x00" * 16000)
+            return {"provider": "fake", "voice": "fake", "cost_usd": 0.0}
+
+        narrate.side_effect = fake_narrate
+
+        def fake_download(path):
+            # A real minimal FeatureCollection, so the projection step runs.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({
+                    "type": "FeatureCollection",
+                    "features": [{
+                        "type": "Feature",
+                        "properties": {"NAME_1": "Kerala"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [74.8, 8.1], [77.5, 8.1], [77.5, 12.9],
+                                [74.8, 12.9], [74.8, 8.1],
+                            ]],
+                        },
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+        with mock.patch(
+            "scripts.india_daily_video._download_map", side_effect=fake_download
+        ):
+            props_path = _run_assets(cards_path, tmp_path, FakeRegistry())
+
+    props = json.loads(props_path.read_text(encoding="utf-8"))
+    # One retry with the generic query, then a clip-less card -- not an raise.
+    assert calls == [
+        sanitize_visual_query("Kerala something very specific"),
+        FALLBACK_VISUAL_QUERY,
+    ]
+    assert props["cards"][0]["clip_src"] == ""
+    assert props["cards"][0]["visual_license"] == "none"
+    assert props["cards"][0]["visual_missing_reason"]
+    assert props["durationInFrames"] > 0
 
 
 def test_render_props_create_one_sequence_per_news_card() -> None:

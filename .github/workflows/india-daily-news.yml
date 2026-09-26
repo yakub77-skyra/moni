@@ -52,6 +52,17 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Install ffmpeg
+        # The repo's bin/ffmpeg.exe is gitignored, so a runner has no ffmpeg.
+        # Chocolatey ships with windows-latest, so this needs no extra action
+        # (and therefore no extra third-party pin to keep current). The
+        # narration/audio stages also have stdlib fallbacks, but the workflow's
+        # own ffprobe verification step needs a real binary.
+        run: |
+          choco install ffmpeg --no-progress -y
+          ffmpeg  -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
