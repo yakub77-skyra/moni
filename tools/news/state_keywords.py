@@ -1,5 +1,31 @@
 """Shared feed + state tables for the India news tools."""
 
+# Feed keys are slugs; attribution is only meaningful if it names the outlet
+# the way a reader would recognise it ("Photo: News18", not "Photo: news18").
+OUTLET_NAMES: dict[str, str] = {
+    "times_of_india": "Times of India",
+    "ndtv": "NDTV",
+    "indian_express": "The Indian Express",
+    "hindu": "The Hindu",
+    "hindustan_times": "Hindustan Times",
+    "india_today": "India Today",
+    "news18": "News18",
+    "firstpost": "Firstpost",
+    "deccan_herald": "Deccan Herald",
+    "livemint": "Mint",
+    "business_standard": "Business Standard",
+}
+
+
+def outlet_display_name(slug: str) -> str:
+    """Human-readable outlet name, falling back to the slug's own words."""
+    if not slug:
+        return ""
+    if slug in OUTLET_NAMES:
+        return OUTLET_NAMES[slug]
+    return slug.replace("_", " ").title()
+
+
 INDIA_NEWS_FEEDS: dict[str, list[str]] = {
     "times_of_india": [
         "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",

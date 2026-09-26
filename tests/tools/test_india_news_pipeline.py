@@ -11,11 +11,13 @@ from unittest import mock
 
 from scripts.india_daily_video import (
     FALLBACK_VISUAL_QUERY,
+    _image_suffix,
     _media_duration,
     _run_assets,
     assemble_narration,
     build_render_props,
     card_timings,
+    download_publisher_image,
     geojson_to_svg_paths,
     narrate_with_sapi,
     normalize_for_tts,
@@ -246,6 +248,178 @@ def test_missing_stock_clip_degrades_instead_of_failing(
     assert props["cards"][0]["visual_license"] == "none"
     assert props["cards"][0]["visual_missing_reason"]
     assert props["durationInFrames"] > 0
+
+
+def test_image_format_detected_by_magic_not_content_type() -> None:
+    # Hindustan Times serves a valid PNG as application/octet-stream, and
+    # NDTV serves WebP, so a Content-Type check would drop real images.
+    assert _image_suffix(b"\xff\xd8\xff\xe0" + b"\x00" * 32) == ".jpg"
+    assert _image_suffix(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32) == ".png"
+    assert _image_suffix(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == ".webp"
+    assert _image_suffix(b"GIF89a" + b"\x00" * 32) == ".gif"
+    # A RIFF container that is not WebP must not be accepted as an image.
+    assert _image_suffix(b"RIFF\x00\x00\x00\x00WAVEfmt ") is None
+    assert _image_suffix(b"<html>not an image at all</html>") is None
+
+
+def test_publisher_image_download_writes_detected_extension(
+    tmp_path: Path,
+) -> None:
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 2048
+    captured: dict = {}
+
+    class FakeResponse:
+        headers: dict = {}
+
+        def read(self):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["headers"] = dict(request.headers)
+        return FakeResponse()
+
+    with mock.patch("urllib.request.urlopen", fake_urlopen):
+        name = download_publisher_image(
+            "https://x.test/a.png", tmp_path / "photo-01",
+            referer="https://x.test/story",
+        )
+
+    assert name == "photo-01.png"
+    assert (tmp_path / "photo-01.png").read_bytes() == payload
+    # NDTV 403s without the Sec-Fetch-* set a real <img> sends.
+    assert captured["headers"].get("Sec-fetch-dest") == "image"
+
+
+def test_publisher_image_download_returns_none_on_failure(
+    tmp_path: Path,
+) -> None:
+    def boom(request, timeout=None):
+        raise OSError("HTTP Error 403: Forbidden")
+
+    with mock.patch("urllib.request.urlopen", boom):
+        assert download_publisher_image(
+            "https://x.test/a.jpg", tmp_path / "photo-02"
+        ) is None
+    # Nothing half-written left behind.
+    assert list(tmp_path.iterdir()) == []
+
+
+def _fake_narration(text, path, run=None):
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(b"\x00\x00" * 16000)
+    return {"provider": "fake", "voice": "fake", "cost_usd": 0.0}
+
+
+def _fake_map_download(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {"NAME_1": "Kerala"},
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [74.8, 8.1], [77.5, 8.1], [77.5, 12.9], [74.8, 12.9], [74.8, 8.1],
+            ]]},
+        }],
+    }), encoding="utf-8")
+
+
+def test_publisher_photo_is_preferred_over_stock(tmp_path: Path) -> None:
+    from tools.base_tool import ToolResult
+
+    class PexelsMustNotRun:
+        def execute(self, params):
+            raise AssertionError("stock must not be fetched when photo exists")
+
+    card = {
+        "rank": 1, "state": "Goa", "outlet": "ndtv", "headline": "h",
+        "narration": "n", "source_url": "https://ndtv.test/story",
+        "visual_query": "Goa police", "lead_image": "https://cdn.test/a.webp",
+    }
+    cards_path = tmp_path / "cards.json"
+    cards_path.write_text(json.dumps({"cards": [card]}), encoding="utf-8")
+
+    class Registry:
+        def get(self, name):
+            assert name == "pexels_video"
+            return PexelsMustNotRun()
+
+    with mock.patch(
+        "scripts.india_daily_video.download_publisher_image",
+        return_value="photo-01.webp",
+    ), mock.patch(
+        "scripts.india_daily_video.narrate_with_sapi", side_effect=_fake_narration
+    ), mock.patch(
+        "scripts.india_daily_video._download_map", side_effect=_fake_map_download
+    ):
+        props = json.loads(
+            _run_assets(cards_path, tmp_path, Registry()).read_text(encoding="utf-8")
+        )
+
+    got = props["cards"][0]
+    assert got["imageSrc"] == "india-daily-news/photo-01.webp"
+    # Attribution must name the outlet recognisably, not the feed slug.
+    assert got["imageCredit"] == "NDTV"
+    assert got["outlet_name"] == "NDTV"
+    assert got["clipSrc"] == ""
+    # The raw CDN URL never reaches the render props.
+    assert "lead_image" not in got
+    assert got["visual_license"] == "publisher-lead-image (credited)"
+
+
+def test_stock_used_only_when_publisher_photo_unavailable(
+    tmp_path: Path,
+) -> None:
+    from tools.base_tool import ToolResult
+
+    card = {
+        "rank": 1, "state": "Goa", "outlet": "ndtv", "headline": "h",
+        "narration": "n", "source_url": "https://ndtv.test/story",
+        "visual_query": "Goa police", "lead_image": "https://cdn.test/a.webp",
+    }
+    cards_path = tmp_path / "cards.json"
+    cards_path.write_text(json.dumps({"cards": [card]}), encoding="utf-8")
+
+    class FakePexels:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, params):
+            self.queries.append(params["query"])
+            Path(params["output_path"]).write_bytes(b"\x00" * 2048)
+            return ToolResult(success=True, data={"license": "Pexels License"})
+
+    pexels = FakePexels()
+
+    class Registry:
+        def get(self, name):
+            return pexels
+
+    with mock.patch(
+        "scripts.india_daily_video.download_publisher_image", return_value=None
+    ), mock.patch(
+        "scripts.india_daily_video.narrate_with_sapi", side_effect=_fake_narration
+    ), mock.patch(
+        "scripts.india_daily_video._download_map", side_effect=_fake_map_download
+    ):
+        props = json.loads(
+            _run_assets(cards_path, tmp_path, Registry()).read_text(encoding="utf-8")
+        )
+
+    got = props["cards"][0]
+    assert got["imageSrc"] == ""
+    assert got["imageCredit"] == ""
+    assert got["clipSrc"] == "india-daily-news/clip-01.mp4"
+    assert pexels.queries, "stock fallback should have been attempted"
 
 
 def test_render_props_create_one_sequence_per_news_card() -> None:

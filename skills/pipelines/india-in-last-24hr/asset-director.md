@@ -6,5 +6,8 @@ licensed visual per `visual_query` via `pexels_video`/`pixabay_video`
 `pixabay_music` (fallback `freesound_music`).
 
 Every asset_manifest entry needs provenance {provider, license, URL}.
-Reject any publisher lead image that slipped in — regenerate from stock.
+The card image is the outlet's own lead photo: record it as
+{publisher-lead-image, credited, article_url}, render a visible
+"Photo: <outlet>" credit on the card, and keep the article URL on the end
+card. Stock is the fallback only, when the publisher image is unavailable.
 Approval gate: human listens to narration samples + views thumbnails.

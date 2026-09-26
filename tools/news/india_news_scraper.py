@@ -3,9 +3,10 @@
 Polls public RSS/Atom endpoints (no auth, no paywall bypass), keeps items
 from the last N hours, dedupes by URL, ranks with outlet diversity, and
 optionally extracts article body + lead image. Headline/summary reuse with
-a source link is fair-use-compatible. Lead images are REFERENCE ONLY and
-must be re-licensed via Pexels/Pixabay/Unsplash or regenerated -- never
-burn publisher photos into the render.
+a source link is fair-dealing-compatible. Lead images are the outlet's own
+news photograph: the render credits the outlet on the card and links the
+article on the end card. Publisher photos are reused, not licensed -- see
+assets/india-last-24hr-map.yaml for the attribution rule that must hold.
 """
 
 from __future__ import annotations
@@ -555,7 +556,8 @@ class IndiaNewsScraper(BaseTool):
                 "outlets_polled": outlets,
                 "feed_errors": feed_errors,
                 "note": "Headline/summary only; link source_url on the end card. "
-                "Lead images are REFERENCE ONLY -- re-license via stock media.",
+                "Lead image is the outlet's own news photo: credited on the "
+                "card, article linked on the end card. Reused, not licensed.",
             },
             artifacts=artifacts,
             duration_seconds=round(time.time() - start, 2),

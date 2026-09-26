@@ -32,6 +32,7 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from tools.news.state_keywords import outlet_display_name  # noqa: E402
 from tools.tool_registry import ToolRegistry, registry  # noqa: E402
 
 MAP_URL = "https://raw.githubusercontent.com/geohacker/india/master/state/india_state.geojson"
@@ -433,6 +434,10 @@ def build_render_props(
         card["clipSourceUrl"] = source.get("clip_source_url") or source.get(
             "visual_source", ""
         )
+        # Publisher lead image, already downloaded into public/. imageSrc
+        # wins over clipSrc when both exist.
+        card["imageSrc"] = source.get("image_src") or ""
+        card["imageCredit"] = source.get("image_credit") or ""
         card.pop("lead_image", None)
         timed_cards.append(card)
         # In locked mode `start` carries the pad, so the end of the last card
@@ -445,7 +450,10 @@ def build_render_props(
         "cards": timed_cards,
         "audioSrc": audio_src,
         "sources": [
-            {"outlet": card.get("outlet", ""), "url": card.get("source_url", "")}
+            {
+                "outlet": card.get("outlet_name") or card.get("outlet", ""),
+                "url": card.get("source_url", ""),
+            }
             for card in timed_cards
         ],
         "endCardFrames": end_card_frames,
@@ -608,6 +616,77 @@ def geojson_to_svg_paths(
     }
 
 
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+# Some publisher CDNs (NDTV) 403 unless the request looks like a real browser
+# image fetch, so send the Sec-Fetch-* set a <img> tag would send.
+_IMAGE_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "image",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": "cross-site",
+}
+# Detect by magic bytes, not Content-Type: Hindustan Times serves a valid PNG
+# as application/octet-stream, which a header check would wrongly reject.
+_IMAGE_SIGNATURES = (
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"RIFF", ".webp"),   # refined below: RIFF....WEBP
+    (b"\x00\x00\x00\x20ftypavif", ".avif"),
+    (b"\x00\x00\x00\x18ftypavif", ".avif"),
+    (b"\x00\x00\x00\x1cftypavif", ".avif"),
+    (b"\x00\x00\x00\x20ftypheic", ".heic"),
+)
+
+
+def _image_suffix(payload: bytes) -> str | None:
+    for magic, suffix in _IMAGE_SIGNATURES:
+        if payload.startswith(magic):
+            if magic == b"RIFF" and payload[8:12] != b"WEBP":
+                return None  # RIFF container that is not WebP (e.g. WAV)
+            return suffix
+    return None
+
+
+def download_publisher_image(
+    url: str, stem: Path, referer: str = ""
+) -> str | None:
+    """Download a publisher lead image. Returns the written filename or None.
+
+    Never raises: publisher CDNs hotlink-protect, so a failure must degrade
+    to the stock fallback rather than lose the episode.
+    """
+    if not url:
+        return None
+    import urllib.request
+
+    headers = dict(_IMAGE_HEADERS)
+    if referer:
+        headers["Referer"] = referer
+    try:
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=45) as response:  # noqa: S310
+            payload = response.read()
+    except Exception as exc:  # noqa: BLE001 - any failure means "use fallback"
+        print(f"WARN image download failed: {url[:80]} -> {exc!s}"[:170])
+        return None
+    suffix = _image_suffix(payload)
+    if suffix is None or len(payload) < 1024:
+        print(f"WARN not an image: {url[:80]}"[:170])
+        return None
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    name = f"{stem.name}{suffix}"
+    target = stem.with_name(name)
+    target.write_bytes(payload)
+    return name
+
+
 def _run_assets(
     cards_path: Path, project: Path, tool_registry: ToolRegistry
 ) -> Path:
@@ -628,7 +707,29 @@ def _run_assets(
         )
         clip_name = f"clip-{rank:02d}.mp4"
         clip_path = media_dir / clip_name
-        if not clip_path.is_file():
+
+        # 1) The actual news photograph from the article's own lead image.
+        #    This is what the format is actually about: the real incident,
+        #    credited on the card and linked on the end card.
+        lead_image = source_card.get("lead_image") or ""
+        photo_name = download_publisher_image(
+            lead_image, media_dir / f"photo-{rank:02d}",
+            referer=card.get("source_url", ""),
+        )
+        if photo_name:
+            card["image_src"] = f"india-daily-news/{photo_name}"
+            card["image_credit"] = outlet_display_name(card.get("outlet", ""))
+            card["visual_license"] = "publisher-lead-image (credited)"
+            card["visual_source"] = lead_image
+        else:
+            card["image_src"] = ""
+            card["image_credit"] = ""
+        # Credit and end card should name the outlet, not its feed slug.
+        card["outlet_name"] = outlet_display_name(card.get("outlet", ""))
+
+        # 2) Fallback only: licensed stock, when the publisher image is absent
+        #    or its CDN refuses the download.
+        if not card["image_src"] and not clip_path.is_file():
             result = pexels.execute({
                 "query": query,
                 "per_page": 5,
@@ -649,18 +750,19 @@ def _run_assets(
                     "output_path": str(clip_path),
                 })
             if result.success:
-                card["visual_license"] = result.data.get(
+                card.setdefault("visual_license", result.data.get(
                     "license", "Pexels License"
-                )
+                ))
                 card["visual_source"] = result.data.get("pexels_url", "")
+                print(f"WARN rank {rank}: using stock fallback, no publisher image")
             else:
-                # Last resort: ship the card without footage. The scene renders
-                # an empty dashed frame, which beats losing the whole episode.
+                # Last resort: ship the card without any picture. The scene
+                # renders an empty dashed frame, which beats losing the episode.
                 card["visual_license"] = "none"
                 card["visual_source"] = ""
                 card["visual_missing_reason"] = str(result.error)[:200]
-                print(f"WARN rank {rank}: no stock clip ({result.error})")
-        card.setdefault("visual_license", "Pexels License")
+                print(f"WARN rank {rank}: no image at all ({result.error})")
+
         if clip_path.is_file():
             card["clip_src"] = f"india-daily-news/{clip_name}"
             # Informational provenance only: never let a probe failure stop the run.

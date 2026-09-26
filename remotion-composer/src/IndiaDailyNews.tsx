@@ -1,6 +1,7 @@
 import {
   AbsoluteFill,
   Audio,
+  Img,
   OffthreadVideo,
   Sequence,
   continueRender,
@@ -24,12 +25,15 @@ export interface IndiaDailyNewsCard {
   rank: number;
   state: string;
   outlet: string;
+  outlet_name?: string;
   headline: string;
   narration: string;
   card_subtitle?: string;
   source_url: string;
   clipSrc: string;
   clipSourceUrl?: string;
+  imageSrc?: string;
+  imageCredit?: string;
   narrationSeconds: number;
   durationInFrames: number;
   fromFrame: number;
@@ -150,6 +154,10 @@ const MapCard: React.FC<{
     extrapolateRight: "clamp",
   });
   const zoom = 1 + 0.03 * (frame / Math.max(1, durationInFrames));
+  const progress = interpolate(frame, [0, durationInFrames], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
   const fadeOut = interpolate(
     frame,
     [durationInFrames - 8, durationInFrames],
@@ -215,7 +223,21 @@ const MapCard: React.FC<{
           boxShadow: `0 0 24px rgba(198,255,0,0.35)`,
         }}
       >
-        {card.clipSrc ? (
+        {card.imageSrc ? (
+          // The real news photograph, with a slow push so a still does not
+          // read as a frozen slideshow frame.
+          <Img
+            src={resolveAsset(card.imageSrc)}
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              transform: `scale(${1.06 + 0.1 * progress}) translateX(${
+                -1.2 + 2.4 * progress
+              }%)`,
+            }}
+          />
+        ) : card.clipSrc ? (
           // OffthreadVideo (not <Video loop>) on purpose: it is frame-accurate
           // and deterministic. A clip shorter than its card simply holds its
           // last frame rather than looping, which keeps renders reproducible.
@@ -284,8 +306,23 @@ const MapCard: React.FC<{
             fontFamily: "system-ui, sans-serif",
           }}
         >
-          {card.outlet} • {card.state}
+          {card.outlet_name || card.outlet} • {card.state}
         </div>
+        {card.imageCredit ? (
+          // Attribution for the publisher's photograph. Crediting the source
+          // on the card (not only on the end card) is what a reposting news
+          // account owes the outlet.
+          <div
+            style={{
+              marginTop: 4,
+              color: "#777",
+              fontSize: 16,
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            Photo: {card.imageCredit}
+          </div>
+        ) : null}
       </div>
 
       {/* Rank badge (topmost: never buried under the bar) */}

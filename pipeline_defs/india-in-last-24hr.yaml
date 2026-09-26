@@ -60,7 +60,8 @@ stages:
     review_focus:
       - Exactly 5 stories selected, each with outlet + source_url + state
       - All stories within the lookback window (default 24h)
-      - Visual plan uses stock/generated media only (no publisher photos)
+      - Visual plan uses the outlet's own lead photo per story, credited on
+        the card and linked on the end card; stock only as a fallback
     success_criteria:
       - Schema-valid brief artifact
       - brief.metadata.stories has 5 entries with source URLs
@@ -107,7 +108,8 @@ stages:
       - Narration audio exists per card (Piper offline default)
       - Background music licensed via Pixabay/Freesound only
       - Every visual asset has provenance (provider, license, URL)
-      - No publisher lead images burned into any asset
+      - Each publisher photo carries a visible on-card credit, and its
+        article URL appears on the end card
     success_criteria:
       - Schema-valid asset_manifest artifact
       - One narration asset per script section
