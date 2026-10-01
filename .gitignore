@@ -102,6 +102,9 @@ remotion-composer/out/
 # throwaway and regenerable. Keeps the shared src/ free of one-off scenes.
 remotion-composer/projects/
 remotion-composer/public/*
+# Staged render footage (CI copies clips here so staticFile() can serve them;
+# regenerable per run — never commit large video files)
+remotion-composer/public/footage/
 # But keep demo props (shipped with the project for zero-key demos)
 !remotion-composer/public/demo-props/
 # Ignore test/scratch compositions in demo-props (keep only curated demos)

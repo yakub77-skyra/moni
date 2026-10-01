@@ -47,6 +47,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      # npm cache is keyed on package-lock.json only, so the staged
+      # remotion-composer/public/footage/ dir is never cached between runs.
       - name: Set up Node (LTS)
         uses: actions/setup-node@v4
         with:
@@ -189,69 +191,27 @@ jobs:
           (out / "footage_report.json").write_text(json.dumps(report, indent=2))
           EOF
 
+      - name: Stage footage into public/ (fixes staticFile 404)
+        run: |
+          # Clips live in out/daily/footage, which Remotion's dev server cannot
+          # serve: staticFile() resolves a relative path against public/, so a
+          # repo-relative path 404s. Stage into public/footage/ and pass only
+          # 'footage/<name>.mp4' in the props.
+          python3 scripts/render_reels_ci.py clean
+          python3 scripts/render_reels_ci.py stage \
+            --report out/daily/footage_report.json \
+            --routes out/daily/routes.json \
+            --out out/daily
+          ls -l remotion-composer/public/footage/
+          cat out/daily/BreakingNewsReel.props.json
+
       - name: Render both reels (Remotion, concurrency 2)
         run: |
-          python3 - <<'EOF'
-          import json
-          import subprocess
-          from datetime import datetime
-          from pathlib import Path
-          from zoneinfo import ZoneInfo
+          python3 scripts/render_reels_ci.py render --out out/daily
 
-          out = Path("out/daily")
-          report = json.loads((out / "footage_report.json").read_text(encoding="utf-8"))
-          routes = json.loads((out / "routes.json").read_text(encoding="utf-8"))
-          jobs = routes["jobs"] if isinstance(routes, dict) else routes
-          by_id = {j["job_id"]: j for j in jobs}
-          ist = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y")
-
-          breaking_id = next(j for j in by_id if by_id[j]["style"] == "breaking") \
-              if any(by_id[j]["style"] == "breaking" for j in by_id) else None
-          trending_id = next(j for j in by_id if by_id[j]["style"] == "trending") \
-              if any(by_id[j]["style"] == "trending" for j in by_id) else None
-
-          renders = []
-          if breaking_id is not None:
-              job = by_id[breaking_id]
-              clips = report[breaking_id]["clips"]
-              props = {
-                  "videoSrc": clips[0],
-                  "headline": job["source_item"]["title"],
-                  "highlightWords": ["Yamuna", "14", "days"],
-                  "subhead": job["source_item"]["summary"][:120],
-                  "dateText": ist,
-                  "watermark": "@INDIAINLAST24HR",
-                  "durationInFrames": 540,
-              }
-              renders.append(("BreakingNewsReel", props, "breaking.mp4"))
-          if trending_id is not None:
-              job = by_id[trending_id]
-              clips = report[trending_id]["clips"]
-              props = {
-                  "clips": clips[:6],
-                  "headline": job["source_item"]["title"],
-                  "highlightWords": ["2", "million", "views"],
-                  "subhead": job["source_item"]["summary"][:120],
-                  "dateText": ist,
-                  "watermark": "@INDIAINLAST24HR",
-                  "durationInFrames": 480,
-              }
-              renders.append(("TrendingNewsReel", props, "trending.mp4"))
-
-          for comp, props, fname in renders:
-              prop_file = out / f"{comp}.props.json"
-              prop_file.write_text(json.dumps(props))
-              # --concurrency verified against installed @remotion/cli 4.0.484
-              # (concurrencyOption in the render path).
-              subprocess.run(
-                  ["npx", "remotion", "render", "src/index.tsx", comp,
-                   f"../out/daily/{fname}", "--props", str(prop_file.resolve()),
-                   "--concurrency=2"],
-                  cwd="remotion-composer",
-                  check=True,
-              )
-              print(f"rendered {fname} from {comp}")
-          EOF
+      - name: Clean staged footage (stale-file hygiene)
+        if: always()
+        run: python3 scripts/render_reels_ci.py clean
 
       - name: Probe, frames, LUFS, manifests
         run: |
