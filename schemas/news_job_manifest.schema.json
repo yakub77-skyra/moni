@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/system/job_manifest",
+  "title": "News Job Manifest",
+  "description": "Contract for system_layer router output: exactly one style per job.",
+  "type": "object",
+  "required": ["job_id", "style", "pipeline", "composition", "reference_pack", "confidence", "source_item", "created_at"],
+  "properties": {
+    "job_id": { "type": "string" },
+    "style": { "type": "string", "enum": ["breaking", "trending", "india_daily"] },
+    "pipeline": { "type": "string" },
+    "composition": { "type": "string" },
+    "reference_pack": { "type": "string" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "tiebreak_used": { "type": "boolean", "default": false },
+    "reason": { "type": "string" },
+    "source_item": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "source_url": { "type": "string" },
+        "outlet": { "type": "string" },
+        "state": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "created_at": { "type": "string" }
+  },
+  "additionalProperties": false
+}

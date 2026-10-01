@@ -14,3 +14,7 @@ openai>=2.44.0         # Videos API support for Sora 2
 fastapi>=0.110
 uvicorn>=0.29
 watchfiles>=0.21
+
+# Social scraping (free libraries, anti-ban hardened, optional at runtime)
+instagrapi==3.0.16      # Instagram session-only search (never password login at runtime)
+twscrape==0.20.1        # X video search via human-managed account pool

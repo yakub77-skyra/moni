@@ -1,0 +1,177 @@
+name: breaking-news
+version: "1.0"
+description: >
+  Style 1 breaking reel. One urgent story, real scraped agency/X footage only
+  (no AI b-roll), 15-20s continuous clip under a static BREAKING headline
+  block. Renders via BreakingNewsReel.tsx (720x1280).
+category: documentary
+stability: beta
+default_checkpoint_policy: guided
+
+reference_input:
+  supported: false
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/breaking_news_director
+  budget_default_usd: 1.00
+  max_revisions_per_stage: 3
+  max_send_backs: 2
+  max_wall_time_minutes: 90
+
+extensions:
+  custom_scripts: true
+  custom_playbooks: true
+  custom_skills: true
+  custom_tools: true
+
+required_skills:
+  - pipelines/breaking_news_director
+  - meta/reviewer
+  - meta/checkpoint-protocol
+
+metadata:
+  composition: BreakingNewsReel
+  reference_pack: references/style1_breaking
+
+compatible_playbooks:
+  recommended:
+    - clean-professional
+  also_works:
+    - flat-motion-graphics
+  custom_allowed: true
+
+stages:
+  - name: research
+    skill: pipelines/breaking_news_director
+    produces:
+      - research_brief
+    tools_available:
+      - x_video_search
+      - india_news_scraper
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - Exactly 1 urgent story with source_url + outlet
+      - Story within the lookback window (default 24h)
+      - At least 1 real video lead (X/agency URL), no AI b-roll
+    success_criteria:
+      - Schema-valid research_brief artifact
+
+  - name: proposal
+    skill: pipelines/breaking_news_director
+    required_artifacts_in:
+      - research_brief
+    produces:
+      - proposal_packet
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - render_runtime locked (remotion) with both runtimes considered
+      - Present both composition runtimes (remotion + hyperframes); lock render_runtime with a render_runtime_selection decision in decision_log before approval
+      - Single 15-20s continuous-clip treatment confirmed
+    success_criteria:
+      - Schema-valid proposal_packet artifact
+      - proposal_packet.production_plan.render_runtime locked with render_runtime_selection decision covering both runtimes
+
+  - name: script
+    skill: pipelines/breaking_news_director
+    required_artifacts_in:
+      - research_brief
+      - proposal_packet
+    produces:
+      - script
+    required_tools:
+      - openrouter_scriptwriter
+    tools_available:
+      - openrouter_scriptwriter
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - Serious, emotional, factual tone; no clickbait
+      - Narration fits 15-20s single-clip timing
+      - No invented facts; headline rewritten in own words
+    success_criteria:
+      - Schema-valid script artifact
+
+  - name: scene_plan
+    skill: pipelines/breaking_news_director
+    required_artifacts_in:
+      - script
+    produces:
+      - scene_plan
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - One full-bleed scene, static overlay spec (kicker/headline/subhead)
+      - Date badge + watermark positions fixed
+    success_criteria:
+      - Schema-valid scene_plan artifact
+
+  - name: assets
+    skill: pipelines/breaking_news_director
+    required_artifacts_in:
+      - script
+      - scene_plan
+    produces:
+      - asset_manifest
+    required_tools:
+      - ytdlp_downloader
+    tools_available:
+      - ytdlp_downloader
+      - footage_selector
+      - video_trimmer
+      - piper_tts
+      - tts_selector
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Real downloaded footage only (no AI b-roll, no TikTok)
+      - One 15-20s continuous clip selected via footage_selector
+      - Every asset has provenance (provider, license, source URL)
+    success_criteria:
+      - Schema-valid asset_manifest artifact
+      - One selected breaking clip with source URL
+
+  - name: edit
+    skill: pipelines/breaking_news_director
+    required_artifacts_in:
+      - script
+      - asset_manifest
+    produces:
+      - edit_decisions
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - 720x1280 vertical timeline matching BreakingNewsReel props
+      - Cuts cover the full narration with no gaps
+    success_criteria:
+      - Schema-valid edit_decisions artifact
+
+  - name: compose
+    skill: pipelines/breaking_news_director
+    required_artifacts_in:
+      - edit_decisions
+      - asset_manifest
+    produces:
+      - render_report
+    required_tools:
+      - video_compose
+    tools_available:
+      - video_compose
+      - audio_mixer
+      - video_trimmer
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - 720x1280 output passes ffprobe validation
+      - Composition is BreakingNewsReel (full-bleed clip + static block)
+      - No overlay keyframe animation
+      - "render_runtime in edit_decisions matches proposal_packet - silent swap to another runtime is a CRITICAL governance violation"
+      - "If render_runtime='hyperframes': route via the video_compose hyperframes path; lint and validate must pass before render; never silently fall back to Remotion"
+    success_criteria:
+      - Schema-valid render_report artifact
+      - Output file exists and passes ffprobe validation

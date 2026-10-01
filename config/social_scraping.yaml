@@ -1,0 +1,25 @@
+# OpenMontage - social scraping safety defaults.
+# Free-library path: instagrapi (Instagram) + twscrape (X). Human-paced, burner-safe.
+delays:
+  min_seconds: 2.5
+  max_seconds: 6.5
+per_run_caps:
+  searches: 5
+  extractions: 10
+daily_caps:
+  instagram: 20
+  x: 30
+  halved_without_proxy: true
+window:
+  start: "08:00"
+  end: "23:00"
+  timezone: "Asia/Kolkata"
+warmed: false
+enabled:
+  instagram: true
+  x: true
+min_faves: 5
+max_age_hours:
+  instagram: 72
+  x: 24
+state_dir: "projects/social"

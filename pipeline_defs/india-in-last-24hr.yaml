@@ -1,6 +1,6 @@
 name: india-in-last-24hr
 version: "1.0"
-  description: >
+description: >
     Daily vertical India news roundup in map-card style. Free RSS scraper
     (Indian outlets only) ranks 5 fresh stories, OpenRouter free model rewrites
     them, each card shows the outlet's own lead photo (credited, article
@@ -110,8 +110,8 @@ stages:
       - Narration audio exists per card (Piper offline default)
       - Background music licensed via Pixabay/Freesound only
       - Every visual asset has provenance (provider, license, URL)
-      - Each publisher photo carries a visible on-card credit ("Photo:
-        <outlet>"), and its article URL goes into caption.txt for the post
+      - 'Each publisher photo carries a visible on-card credit ("Photo:
+        <outlet>"), and its article URL goes into caption.txt for the post'
     success_criteria:
       - Schema-valid asset_manifest artifact
       - One narration asset per script section

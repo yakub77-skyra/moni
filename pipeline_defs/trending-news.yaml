@@ -1,0 +1,177 @@
+name: trending-news
+version: "1.0"
+description: >
+  Style 2 trending reel. One viral story, IG Reels + YT Shorts + trailers only
+  (no TikTok), 4-6 jump cuts of 3-5s under a static TRENDING headline block
+  ending with " | WATCH". Renders via TrendingNewsReel.tsx (720x900).
+category: generated
+stability: beta
+default_checkpoint_policy: guided
+
+reference_input:
+  supported: false
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/trending_news_director
+  budget_default_usd: 1.00
+  max_revisions_per_stage: 3
+  max_send_backs: 2
+  max_wall_time_minutes: 90
+
+extensions:
+  custom_scripts: true
+  custom_playbooks: true
+  custom_skills: true
+  custom_tools: true
+
+required_skills:
+  - pipelines/trending_news_director
+  - meta/reviewer
+  - meta/checkpoint-protocol
+
+metadata:
+  composition: TrendingNewsReel
+  reference_pack: references/style2_trending
+
+compatible_playbooks:
+  recommended:
+    - flat-motion-graphics
+  also_works:
+    - clean-professional
+  custom_allowed: true
+
+stages:
+  - name: research
+    skill: pipelines/trending_news_director
+    produces:
+      - research_brief
+    tools_available:
+      - instagram_reel_search
+      - direct_clip_search
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - Exactly 1 viral story with source_url + outlet
+      - Story within the lookback window (default 24h)
+      - 4-6 reel/shorts/trailer leads (IG + YT only, no TikTok)
+    success_criteria:
+      - Schema-valid research_brief artifact
+
+  - name: proposal
+    skill: pipelines/trending_news_director
+    required_artifacts_in:
+      - research_brief
+    produces:
+      - proposal_packet
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - render_runtime locked (remotion) with both runtimes considered
+      - Present both composition runtimes (remotion + hyperframes); lock render_runtime with a render_runtime_selection decision in decision_log before approval
+      - 4-6x jump-cut montage treatment confirmed
+    success_criteria:
+      - Schema-valid proposal_packet artifact
+      - proposal_packet.production_plan.render_runtime locked with render_runtime_selection decision covering both runtimes
+
+  - name: script
+    skill: pipelines/trending_news_director
+    required_artifacts_in:
+      - research_brief
+      - proposal_packet
+    produces:
+      - script
+    required_tools:
+      - openrouter_scriptwriter
+    tools_available:
+      - openrouter_scriptwriter
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - Clickbait/viral tone; headline ends with " | WATCH"
+      - Narration fits 4-6 jump cuts of 3-5s each
+      - No invented facts; headline rewritten in own words
+    success_criteria:
+      - Schema-valid script artifact
+
+  - name: scene_plan
+    skill: pipelines/trending_news_director
+    required_artifacts_in:
+      - script
+    produces:
+      - scene_plan
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - "FootageMontage plan: 4-6 clips with hard cuts every 3-5s"
+      - "Static overlay spec (TRENDING kicker + headline + subhead)"
+    success_criteria:
+      - Schema-valid scene_plan artifact
+
+  - name: assets
+    skill: pipelines/trending_news_director
+    required_artifacts_in:
+      - script
+      - scene_plan
+    produces:
+      - asset_manifest
+    required_tools:
+      - ytdlp_downloader
+    tools_available:
+      - ytdlp_downloader
+      - footage_selector
+      - video_trimmer
+      - piper_tts
+      - tts_selector
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - IG Reels + YT Shorts + trailers only (no TikTok, enforced by ytdlp_downloader)
+      - 4-6 jump cuts of 3-5s selected via footage_selector
+      - Every asset has provenance (provider, license, source URL)
+    success_criteria:
+      - Schema-valid asset_manifest artifact
+      - Trending montage with 4-6 cuts and source URLs
+
+  - name: edit
+    skill: pipelines/trending_news_director
+    required_artifacts_in:
+      - script
+      - asset_manifest
+    produces:
+      - edit_decisions
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - 720x900 vertical timeline matching TrendingNewsReel props
+      - Hard cuts every 3-5s, no transitions
+    success_criteria:
+      - Schema-valid edit_decisions artifact
+
+  - name: compose
+    skill: pipelines/trending_news_director
+    required_artifacts_in:
+      - edit_decisions
+      - asset_manifest
+    produces:
+      - render_report
+    required_tools:
+      - video_compose
+    tools_available:
+      - video_compose
+      - audio_mixer
+      - video_trimmer
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - 720x900 output passes ffprobe validation
+      - Composition is TrendingNewsReel (FootageMontage + static block)
+      - No overlay keyframe animation
+      - "render_runtime in edit_decisions matches proposal_packet - silent swap to another runtime is a CRITICAL governance violation"
+      - "If render_runtime='hyperframes': route via the video_compose hyperframes path; lint and validate must pass before render; never silently fall back to Remotion"
+    success_criteria:
+      - Schema-valid render_report artifact
+      - Output file exists and passes ffprobe validation

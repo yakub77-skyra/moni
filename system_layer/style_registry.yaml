@@ -1,0 +1,20 @@
+# Style registry — one style per render job. Never load 2+ packs at once.
+styles:
+  breaking:
+    pipeline: breaking-news
+    pipeline_manifest: pipeline_defs/breaking-news.yaml
+    composition: BreakingNewsReel
+    reference_pack: references/style1_breaking
+    description: Urgent hard-news reel. Real scraped footage only, no AI b-roll.
+  trending:
+    pipeline: trending-news
+    pipeline_manifest: pipeline_defs/trending-news.yaml
+    composition: TrendingNewsReel
+    reference_pack: references/style2_trending
+    description: Viral/entertainment reel. IG Reels + YT Shorts + trailers only, no TikTok.
+  india_daily:
+    pipeline: india-in-last-24hr
+    pipeline_manifest: pipeline_defs/india-in-last-24hr.yaml
+    composition: IndiaDailyNews
+    reference_pack: references/style3_map
+    description: Style 3 map-card roundup. Protected — do not modify.

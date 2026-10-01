@@ -1,0 +1,349 @@
+# CI render pipeline — heavy work only (GitHub Actions).
+#
+# The laptop must NEVER render. All Remotion renders, FFmpeg encodes,
+# frame probes, and LUFS measurements happen here and return artifacts
+# (MP4s, probes, manifests, report.json) for human review.
+#
+# Trigger (human only, never automated): Actions tab -> render-reels ->
+# Run workflow. Add repository secret OPENROUTER_API_KEY first
+# (Settings -> Secrets and variables -> Actions -> New repository secret).
+# The workflow itself is NOT triggered by this commit.
+name: render-reels
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Fixture headlines (fixture) or live RSS scrape (daily)"
+        required: false
+        default: fixture
+        type: choice
+        options:
+          - fixture
+          - daily
+
+concurrency:
+  group: render-reels
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      TZ: Asia/Kolkata
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python (repo .python-version)
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Set up Node (LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: remotion-composer/package-lock.json
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Install Remotion composer deps
+        working-directory: remotion-composer
+        run: npm ci
+
+      - name: Assert social scraping stays OFF in CI
+        run: |
+          python3 - <<'EOF'
+          import sys
+          import yaml
+          cfg = yaml.safe_load(open("config/social_scraping.yaml", encoding="utf-8"))
+          assert cfg.get("warmed") is False, (
+              "REFUSING TO RUN: social.warmed is true; CI must never live-auth social accounts"
+          )
+          from tools.tool_registry import registry
+          registry.discover()
+          for name in ("instagram_reel_search", "x_video_search"):
+              status = registry._tools[name].get_status().value
+              assert status == "unavailable", (
+                  f"REFUSING TO RUN: {name} reports {status}; "
+                  "a social tool must never attempt live auth in CI"
+              )
+          print("social guard OK: warmed=false, both social tools UNAVAILABLE")
+          EOF
+
+      - name: Route fixture headlines (mode=fixture)
+        if: inputs.mode == 'fixture'
+        run: |
+          mkdir -p out/daily
+          cat > /tmp/fixture_items.json <<'EOF'
+          [
+            {"title": "Delhi HC orders status report on Yamuna flood-plain encroachments within 14 days",
+             "summary": "The Delhi High Court directed authorities to file a status report on encroachments in the Yamuna flood plain within two weeks.",
+             "source_url": "https://example.com/yamuna-report", "outlet": "Example News", "state": "Delhi"},
+            {"title": "Mumbai station 'dancing dog' video crosses 2 million views, netizens call it the best conductor",
+             "summary": "A viral video of a dog dancing at a Mumbai station crossed 2 million views as netizens called it the best conductor.",
+             "source_url": "https://example.com/dancing-dog", "outlet": "Example News", "state": "Maharashtra"}
+          ]
+          EOF
+          python3 system_layer/daily.py --input /tmp/fixture_items.json --mode fixture --project-dir out/daily
+
+      - name: Route live scrape (mode=daily)
+        if: inputs.mode == 'daily'
+        run: |
+          mkdir -p out/daily
+          make daily-news
+
+      - name: Footage ladder (live first, placeholder fallback)
+        run: |
+          python3 - <<'EOF'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          from tools.video.ytdlp_downloader import YtdlpDownloader
+
+          out = Path("out/daily")
+          footage = out / "footage"
+          footage.mkdir(parents=True, exist_ok=True)
+          routes = json.loads((out / "routes.json").read_text(encoding="utf-8"))
+          jobs = routes["jobs"] if isinstance(routes, dict) else routes
+
+          QUERIES = {
+              "breaking": ["Yamuna flood plain Delhi news report", "Delhi High Court Yamuna encroachment news"],
+              "trending": ["Mumbai station dancing dog viral video", "funny dog dancing viral shorts"],
+              "india_daily": ["India daily news headlines"],
+          }
+          SPECS = {
+              "breaking": ("breaking.mp4", 720, 1280, 18),
+              "trending": ("trending.mp4", 720, 900, 16),
+              "india_daily": ("india_daily.mp4", 720, 1280, 18),
+          }
+
+          tool = YtdlpDownloader()
+          report = {}
+          for job in jobs:
+              style = job.get("style", "india_daily")
+              fname, width, height, seconds = SPECS.get(style, SPECS["india_daily"])
+              queries = QUERIES.get(style, QUERIES["india_daily"])
+              urls = [f"ytsearch1:{q}" for q in queries]
+              # Resolve search hits to watch URLs first (single-result search,
+              # no download), then download concrete URLs through the hardened
+              # retry matrix (player clients web_safari/android/ios/mweb).
+              watch_urls = []
+              for q in queries:
+                  try:
+                      proc = subprocess.run(
+                          ["yt-dlp", "--flat-playlist", "--print", "id", f"ytsearch1:{q}"],
+                          capture_output=True, text=True, timeout=120,
+                      )
+                      vid = (proc.stdout or "").strip().splitlines()
+                      if proc.returncode == 0 and vid and vid[0].strip():
+                          watch_urls.append(f"https://www.youtube.com/watch?v={vid[0].strip()}")
+                  except Exception:
+                      continue
+              result = tool.execute({
+                  "url": watch_urls[0] if watch_urls else urls[0],
+                  "urls": watch_urls or urls,
+                  "output_dir": str(footage),
+                  "max_resolution": "720p",
+              })
+              clips = []
+              if result.success:
+                  for item in result.data.get("items", []):
+                      if item.get("status") == "downloaded" and item.get("video_path"):
+                          clips.append(item["video_path"])
+              source = "live" if clips else "placeholder"
+              if not clips:
+                  target = footage / f"placeholder_{fname}"
+                  subprocess.run(
+                      ["ffmpeg", "-y", "-f", "lavfi", "-i",
+                       f"testsrc2=size={width}x{height}:rate=30:duration={seconds}",
+                       "-pix_fmt", "yuv420p", str(target)],
+                      check=True,
+                  )
+                  if style == "trending":
+                      clips = [str(target)] * 4  # 4 x 4s hard cuts
+                  else:
+                      clips = [str(target)]
+              report[job["job_id"]] = {
+                  "style": style,
+                  "footage_source": source,
+                  "clips": clips,
+                  "ladder": result.data.get("report", []) if hasattr(result, "data") else [],
+              }
+              print(f"{job['job_id']}: {source} ({len(clips)} clips)")
+
+          (out / "footage_report.json").write_text(json.dumps(report, indent=2))
+          EOF
+
+      - name: Render both reels (Remotion, concurrency 2)
+        run: |
+          python3 - <<'EOF'
+          import json
+          import subprocess
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          out = Path("out/daily")
+          report = json.loads((out / "footage_report.json").read_text(encoding="utf-8"))
+          routes = json.loads((out / "routes.json").read_text(encoding="utf-8"))
+          jobs = routes["jobs"] if isinstance(routes, dict) else routes
+          by_id = {j["job_id"]: j for j in jobs}
+          ist = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y")
+
+          breaking_id = next(j for j in by_id if by_id[j]["style"] == "breaking") \
+              if any(by_id[j]["style"] == "breaking" for j in by_id) else None
+          trending_id = next(j for j in by_id if by_id[j]["style"] == "trending") \
+              if any(by_id[j]["style"] == "trending" for j in by_id) else None
+
+          renders = []
+          if breaking_id is not None:
+              job = by_id[breaking_id]
+              clips = report[breaking_id]["clips"]
+              props = {
+                  "videoSrc": clips[0],
+                  "headline": job["source_item"]["title"],
+                  "highlightWords": ["Yamuna", "14", "days"],
+                  "subhead": job["source_item"]["summary"][:120],
+                  "dateText": ist,
+                  "watermark": "@INDIAINLAST24HR",
+                  "durationInFrames": 540,
+              }
+              renders.append(("BreakingNewsReel", props, "breaking.mp4"))
+          if trending_id is not None:
+              job = by_id[trending_id]
+              clips = report[trending_id]["clips"]
+              props = {
+                  "clips": clips[:6],
+                  "headline": job["source_item"]["title"],
+                  "highlightWords": ["2", "million", "views"],
+                  "subhead": job["source_item"]["summary"][:120],
+                  "dateText": ist,
+                  "watermark": "@INDIAINLAST24HR",
+                  "durationInFrames": 480,
+              }
+              renders.append(("TrendingNewsReel", props, "trending.mp4"))
+
+          for comp, props, fname in renders:
+              prop_file = out / f"{comp}.props.json"
+              prop_file.write_text(json.dumps(props))
+              # --concurrency verified against installed @remotion/cli 4.0.484
+              # (concurrencyOption in the render path).
+              subprocess.run(
+                  ["npx", "remotion", "render", "src/index.tsx", comp,
+                   f"../out/daily/{fname}", "--props", str(prop_file.resolve()),
+                   "--concurrency=2"],
+                  cwd="remotion-composer",
+                  check=True,
+              )
+              print(f"rendered {fname} from {comp}")
+          EOF
+
+      - name: Probe, frames, LUFS, manifests
+        run: |
+          python3 - <<'EOF'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          out = Path("out/daily")
+          probes = out / "probes"
+          probes.mkdir(parents=True, exist_ok=True)
+          report = json.loads((out / "footage_report.json").read_text(encoding="utf-8"))
+
+          def probe(path):
+              info = json.loads(subprocess.run(
+                  ["ffprobe", "-v", "quiet", "-print_format", "json",
+                   "-show_format", "-show_streams", str(path)],
+                  capture_output=True, text=True, check=True,
+              ).stdout)
+              fmt = info.get("format", {})
+              streams = info.get("streams", [])
+              video = next((s for s in streams if s.get("codec_type") == "video"), {})
+              has_audio = any(s.get("codec_type") == "audio" for s in streams)
+              return {
+                  "duration_s": round(float(fmt.get("duration", 0.0)), 2),
+                  "width": int(video.get("width", 0)),
+                  "height": int(video.get("height", 0)),
+                  "has_audio": has_audio,
+              }
+
+          def lufs(path):
+              proc = subprocess.run(
+                  ["ffmpeg", "-hide_banner", "-i", str(path),
+                   "-map", "0:a", "-af", "ebur128=peak=true", "-f", "null", "-"],
+                  capture_output=True, text=True,
+              )
+              for line in (proc.stderr or "").splitlines():
+                  if "Integrated loudness" in line and "I:" in line:
+                      return line.split("I:")[1].strip()
+              return "n/a (no audio track)"
+
+          summary = []
+          for mp4 in sorted(out.glob("*.mp4")):
+              meta = probe(mp4)
+              dur = meta["duration_s"]
+              times = [1.0, round(dur / 2, 2), round(max(dur - 1, 0.5), 2)]
+              frames = []
+              for i, t in enumerate(times):
+                  frame = probes / f"{mp4.stem}_t{i}.png"
+                  subprocess.run(
+                      ["ffmpeg", "-y", "-ss", str(t), "-i", str(mp4),
+                       "-frames:v", "1", str(frame)],
+                      check=True, capture_output=True,
+                  )
+                  frames.append(str(frame.relative_to(out)))
+              style = "breaking" if "breaking" in mp4.stem else "trending"
+              footage_source = next(
+                  (v["footage_source"] for k, v in report.items() if v["style"] == style),
+                  "unknown",
+              )
+              manifest = {
+                  "item": mp4.stem,
+                  "style": style,
+                  "footage_source": footage_source,
+                  "duration_s": meta["duration_s"],
+                  "width": meta["width"],
+                  "height": meta["height"],
+                  "lufs": lufs(mp4) if meta["has_audio"] else "n/a (no audio track)",
+                  "probes": frames,
+                  "mp4": str(mp4.relative_to(out)),
+              }
+              (out / f"post_manifest_{mp4.stem}.json").write_text(json.dumps(manifest, indent=2))
+              summary.append(manifest)
+
+          (out / "report.json").write_text(json.dumps(summary, indent=2))
+          with open("out/daily/summary.md", "w", encoding="utf-8") as f:
+              f.write("| item | style | footage source | duration | LUFS |\n")
+              f.write("|---|---|---|---|---|\n")
+              for m in summary:
+                  f.write(f"| {m['item']} | {m['style']} | {m['footage_source']} "
+                          f"| {m['duration_s']}s | {m['lufs']} |\n")
+          print(json.dumps(summary, indent=2))
+          EOF
+          cat out/daily/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: IST date for artifact name
+        id: ist
+        run: echo "date=$(TZ=Asia/Kolkata date +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload reels artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reels-${{ steps.ist.outputs.date }}
+          path: out/daily/**
+          retention-days: 7

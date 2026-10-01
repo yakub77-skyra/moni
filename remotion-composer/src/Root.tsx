@@ -17,6 +17,16 @@ import { CaptionOverlay, WordCaption } from "./components/CaptionOverlay";
 import { CollageBurst, CollageBurstProps } from "./CollageBurst";
 import { LyricOverlay, LyricOverlayProps } from "./LyricOverlay";
 import { IndiaDailyNews, IndiaDailyNewsProps } from "./IndiaDailyNews";
+import {
+  BreakingNewsReel,
+  BreakingNewsReelProps,
+  calculateBreakingNewsMetadata,
+} from "./BreakingNewsReel";
+import {
+  TrendingNewsReel,
+  TrendingNewsReelProps,
+  calculateTrendingNewsMetadata,
+} from "./TrendingNewsReel";
 
 // ---------------------------------------------------------------------------
 // Theme System — prevents every video from looking like dark fintech
@@ -359,6 +369,41 @@ export const Root: React.FC = () => {
           fadeOutSeconds: 1.5,
           overlay: true,
         } as EndTagProps}
+      />
+      <Composition
+        id="BreakingNewsReel"
+        component={BreakingNewsReel}
+        durationInFrames={30 * 20}
+        fps={30}
+        width={720}
+        height={1280}
+        defaultProps={{
+          videoSrc: "",
+          headline: "BREAKING NEWS HEADLINE",
+          highlightWords: [],
+          subhead: "",
+          dateText: "",
+          watermark: "@DAILYNEWS",
+          audioSrc: "",
+        } as BreakingNewsReelProps}
+        calculateMetadata={calculateBreakingNewsMetadata}
+      />
+      <Composition
+        id="TrendingNewsReel"
+        component={TrendingNewsReel}
+        durationInFrames={30 * 20}
+        fps={30}
+        width={720}
+        height={900}
+        defaultProps={{
+          clips: [],
+          headline: "VIRAL STORY | WATCH",
+          subhead: "",
+          dateText: "",
+          watermark: "@DAILYNEWS",
+          audioSrc: "",
+        } as TrendingNewsReelProps}
+        calculateMetadata={calculateTrendingNewsMetadata}
       />
     </>
   );

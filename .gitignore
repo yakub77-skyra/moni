@@ -43,6 +43,16 @@ music_library/
 .env.local
 *.env
 .youtube-token.json
+# Social scraping state + secrets (sessions, pools, proxies, counters)
+*session*.json
+**/*session*.json
+accounts.txt
+**/accounts.txt
+*proxy*.txt
+**/proxies*.txt
+projects/social/
+twscrape_accounts.db
+**/*.db
 # Google service-account / Vertex AI keys — never commit
 gcp-*.json
 *-service-account.json

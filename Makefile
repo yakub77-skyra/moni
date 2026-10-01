@@ -6,7 +6,7 @@ PIP = $(RUN_PYTHON) -m pip
 
 .DEFAULT_GOAL := setup
 
-.PHONY: setup install install-dev install-gpu test test-contracts lint clean preflight demo demo-list hyperframes-doctor hyperframes-warm venv ensure-venv
+.PHONY: setup install install-dev install-gpu test test-contracts lint clean preflight demo demo-list hyperframes-doctor hyperframes-warm venv ensure-venv daily-news social-setup social-smoke reels-workflow-lint
 
 # ---- Virtual environment ----
 
@@ -94,6 +94,22 @@ test: ensure-venv
 
 test-contracts: ensure-venv
 	$(RUN_PYTHON) -m pytest tests/contracts/ -v
+
+daily-news: ensure-venv
+	$(RUN_PYTHON) system_layer/daily.py --scrape --max-items 5
+
+social-setup: ensure-venv
+	$(RUN_PYTHON) scripts/social_setup.py $(SOCIAL_ARGS)
+
+social-smoke: ensure-venv
+	$(RUN_PYTHON) scripts/social_smoke.py $(SOCIAL_ARGS)
+
+# Laptop must NEVER render: heavy Remotion/FFmpeg work runs in CI via
+# .github/workflows/render-reels.yml. This target only lints that workflow
+# and checks the --mode wiring. No render is executed locally.
+reels-workflow-lint: ensure-venv
+	$(RUN_PYTHON) -c "import yaml; yaml.safe_load(open('.github/workflows/render-reels.yml', encoding='utf-8')); print('workflow YAML parses OK')"
+	$(RUN_PYTHON) -c "import subprocess,sys; out=subprocess.run([sys.executable,'system_layer/daily.py','--help'],capture_output=True,text=True).stdout; assert '--mode' in out, 'missing --mode'; print('--mode wiring OK')"
 
 # ---- Utilities ----
 
