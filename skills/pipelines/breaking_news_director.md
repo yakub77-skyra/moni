@@ -32,6 +32,12 @@ Serious, emotional, factual. No clickbait. No AI b-roll. No TikTok.
 ## Rules
 
 - Footage must be real scraped agency/X video. AI b-roll is forbidden.
+- **No placeholder footage, ever.** Synthetic filler (test patterns, colour
+  bars, stock stand-ins) is forbidden. If `ytdlp_downloader` or
+  `footage_selector` cannot supply a real 15-20s clip, STOP and escalate per
+  AGENT_GUIDE.md "Escalate Blockers Explicitly" — report what was attempted,
+  what failed (auth / tool / rate limit), and the options. Do not render a reel
+  with substituted footage and call it done.
 - Backlot events log automatically via `BaseTool.execute()`; gate `assets`
   with `write_checkpoint(..., human_approved=True)`.
 - Load ONLY `references/style1_breaking` for this style.

@@ -38,6 +38,22 @@ PUBLIC_DIR = COMPOSER / "public"
 STAGING_DIRNAME = "footage"
 RENDER_CONCURRENCY = 2
 
+# The subhead sits under the headline inside the white mask; past ~120 chars it
+# collides with the video below, so it is trimmed at a word boundary.
+MAX_SUBHEAD_CHARS = 120
+
+
+def trim_summary(text: str, limit: int = MAX_SUBHEAD_CHARS) -> str:
+    """Trim to `limit` chars without leaving a dangling partial word."""
+    clean = " ".join(str(text or "").split())
+    if len(clean) <= limit:
+        return clean
+    cut = clean[:limit]
+    space = cut.rfind(" ")
+    if space > limit * 0.6:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:-") + "…"
+
 # Which composition consumes which prop key for its footage.
 # (single clip vs list of clips) — the only structural difference between them.
 COMPOSITIONS = {
@@ -106,11 +122,38 @@ def _safe_name(raw: str) -> str:
     return f"{stem.strip('_') or 'clip'}{suffix}"
 
 
+def assert_real_footage(job_id: str, entry: dict[str, Any]) -> list[str]:
+    """Reject any footage report entry that is not real downloaded footage.
+
+    A CI ladder bug once substituted an ffmpeg `testsrc2` colour-bar pattern for
+    every reel and the run still reported success. Real news footage is
+    mandatory (breaking_news_director.md: "AI b-roll is forbidden"), so this
+    fails the stage instead of rendering test bars as a finished deliverable.
+    """
+    source = str(entry.get("footage_source", ""))
+    clips = [str(c) for c in entry.get("clips", [])]
+    if source != "live":
+        raise ValueError(
+            f"{job_id}: footage_source is {source!r}, not 'live'. Real news "
+            f"footage is mandatory; synthetic placeholders are forbidden. "
+            f"Ladder output: {entry.get('ladder')}"
+        )
+    if not clips:
+        raise ValueError(f"{job_id}: footage_source is 'live' but clips[] is empty")
+    for clip in clips:
+        if Path(clip).stem.startswith("placeholder"):
+            raise ValueError(
+                f"{job_id}: {clip} looks like a synthetic placeholder. Real "
+                f"downloaded footage only."
+            )
+    return clips
+
+
 def stage_clips(clips: list[str]) -> list[str]:
     """Copy each clip into public/footage and return public-relative paths.
 
-    Duplicate sources are copied once and referenced repeatedly (the trending
-    placeholder is deliberately reused for its 4 hard cuts).
+    Duplicate sources are copied once and referenced repeatedly (a trending reel
+    may legitimately stage the same source for more than one hard cut).
     """
     if not clips:
         raise ValueError("no clips to stage")
@@ -140,7 +183,7 @@ def build_props(composition: str, staged_clips: list[str],
     props: dict[str, Any] = {
         "headline": headline,
         "highlightWords": highlight_words,
-        "subhead": str(source_item.get("summary", ""))[:120],
+        "subhead": trim_summary(source_item.get("summary", "")),
         "dateText": datetime.now().strftime("%d %b %Y"),
         "watermark": watermark,
         "audioSrc": "",
@@ -241,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         for entry in plan:
             composition = entry["composition"]
             job_id = entry["job_id"]
-            clips = report.get(job_id, {}).get("clips", [])
+            clips = assert_real_footage(job_id, report.get(job_id, {}))
             staged = stage_clips(clips)
             props = build_props(
                 composition, staged, by_id[job_id],

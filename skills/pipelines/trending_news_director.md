@@ -33,6 +33,12 @@ India): IG Reels + YT Shorts + trailers ONLY.
 
 - Trending footage = IG Reels + YT Shorts + trailers ONLY. TikTok is
   blocklisted in `ytdlp_downloader` and forbidden here.
+- **No placeholder footage, ever.** Synthetic filler (test patterns, colour
+  bars, stock stand-ins, repeated copies of one clip) is forbidden. If
+  `ytdlp_downloader` or `footage_selector` cannot supply real clips, STOP and
+  escalate per AGENT_GUIDE.md "Escalate Blockers Explicitly" — report what was
+  attempted, what failed (auth / tool / rate limit), and the options. Do not
+  render a reel with substituted footage and call it done.
 - Backlot events log automatically via `BaseTool.execute()`; gate `assets`
   with `write_checkpoint(..., human_approved=True)`.
 - Load ONLY `references/style2_trending` for this style.

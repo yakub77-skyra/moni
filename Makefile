@@ -110,6 +110,15 @@ social-smoke: ensure-venv
 reels-workflow-lint: ensure-venv
 	$(RUN_PYTHON) -c "import yaml; yaml.safe_load(open('.github/workflows/render-reels.yml', encoding='utf-8')); print('workflow YAML parses OK')"
 	$(RUN_PYTHON) -c "import subprocess,sys; out=subprocess.run([sys.executable,'system_layer/daily.py','--help'],capture_output=True,text=True).stdout; assert '--mode' in out, 'missing --mode'; print('--mode wiring OK')"
+	$(RUN_PYTHON) -c "import pathlib; \
+text=pathlib.Path('requirements.txt').read_text(encoding='utf-8'); \
+assert 'yt-dlp' in text, 'requirements.txt must pin yt-dlp or the footage ladder cannot download anything'; \
+print('yt-dlp pinned OK')"
+$(RUN_PYTHON) -c "import pathlib; \
+files=['.github/workflows/render-reels.yml','scripts/footage_ladder.py','scripts/render_reels_ci.py']; \
+bad=[f for f in files if 'lavfi' in pathlib.Path(f).read_text(encoding='utf-8')]; \
+assert not bad, f'synthetic placeholder footage is forbidden (breaking_news_director.md: AI b-roll is forbidden); ffmpeg lavfi found in: {bad}'; \
+print('no placeholder fallback OK')"
 
 # ---- Utilities ----
 

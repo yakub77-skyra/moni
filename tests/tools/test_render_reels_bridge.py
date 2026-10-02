@@ -37,14 +37,14 @@ def _make_clip(path: Path, name: str = "clip.mp4") -> Path:
 
 
 def test_stage_copies_clip_and_returns_public_relative_path(staging, tmp_path) -> None:
-    src = _make_clip(tmp_path / "out" / "daily" / "footage" / "placeholder_breaking.mp4",
-                     "placeholder_breaking.mp4")
+    src = _make_clip(tmp_path / "out" / "daily" / "footage" / "breaking_KGZfN-363QY.mp4",
+                     "breaking_KGZfN-363QY.mp4")
 
     staged = bridge.stage_clips([str(src)])
 
-    assert staged == ["footage/placeholder_breaking.mp4"]
+    assert staged == ["footage/breaking_KGZfN-363QY.mp4"]
     # The file really exists where staticFile() will look for it.
-    assert (staging / "placeholder_breaking.mp4").is_file()
+    assert (staging / "breaking_KGZfN-363QY.mp4").is_file()
     # The original download location is untouched.
     assert src.is_file()
 
@@ -81,11 +81,11 @@ def test_trending_props_carry_at_most_six_relative_clips(staging, tmp_path) -> N
 
 
 def test_duplicate_source_is_staged_once_but_referenced_twice(staging, tmp_path) -> None:
-    # The trending placeholder is deliberately reused for its 4 hard cuts.
-    src = _make_clip(tmp_path / "placeholder_trending.mp4", "placeholder_trending.mp4")
+    # One source reused across several hard cuts is legitimate.
+    src = _make_clip(tmp_path / "trending_cut_00_eyoMZwdjbOE.mp4", "trending_cut_00_eyoMZwdjbOE.mp4")
     staged = bridge.stage_clips([str(src)] * 4)
 
-    assert staged == ["footage/placeholder_trending.mp4"] * 4
+    assert staged == ["footage/trending_cut_00_eyoMZwdjbOE.mp4"] * 4
     assert len(list(staging.glob("*.mp4"))) == 1
 
 
@@ -94,7 +94,7 @@ def test_build_props_rejects_filesystem_paths() -> None:
     with pytest.raises(ValueError, match="not public-relative"):
         bridge.build_props(
             "BreakingNewsReel",
-            ["out/daily/footage/placeholder_breaking.mp4"],
+            ["out/daily/footage/breaking_KGZfN-363QY.mp4"],
             {"source_item": {"title": "t", "summary": "s"}},
             duration_in_frames=540, highlight_words=[], watermark="@X",
         )
@@ -139,8 +139,8 @@ def test_stage_command_writes_props_files(tmp_path, monkeypatch) -> None:
     public = tmp_path / "public"
     monkeypatch.setattr(bridge, "PUBLIC_DIR", public)
     out = tmp_path / "out"
-    clip = _make_clip(out / "footage" / "placeholder_breaking.mp4",
-                      "placeholder_breaking.mp4")
+    clip = _make_clip(out / "footage" / "breaking_KGZfN-363QY.mp4",
+                      "breaking_KGZfN-363QY.mp4")
     jobs = [
         {"job_id": "job-b", "style": "breaking",
          "source_item": {"title": "Delhi HC orders report", "summary": "Court asked."}},
@@ -149,8 +149,8 @@ def test_stage_command_writes_props_files(tmp_path, monkeypatch) -> None:
     ]
     (out / "routes.json").write_text(json.dumps({"mode": "fixture", "jobs": jobs}))
     (out / "footage_report.json").write_text(json.dumps({
-        "job-b": {"clips": [str(clip)]},
-        "job-t": {"clips": [str(clip)] * 4},
+        "job-b": {"footage_source": "live", "clips": [str(clip)]},
+        "job-t": {"footage_source": "live", "clips": [str(clip)] * 4},
     }))
 
     rc = bridge.main(["stage", "--report", str(out / "footage_report.json"),
@@ -159,9 +159,31 @@ def test_stage_command_writes_props_files(tmp_path, monkeypatch) -> None:
     assert rc == 0
     breaking = json.loads((out / "BreakingNewsReel.props.json").read_text())
     trending = json.loads((out / "TrendingNewsReel.props.json").read_text())
-    assert breaking["videoSrc"] == "footage/placeholder_breaking.mp4"
-    assert trending["clips"] == ["footage/placeholder_breaking.mp4"] * 4
-    assert (public / "footage" / "placeholder_breaking.mp4").is_file()
+    assert breaking["videoSrc"] == "footage/breaking_KGZfN-363QY.mp4"
+    assert trending["clips"] == ["footage/breaking_KGZfN-363QY.mp4"] * 4
+    assert (public / "footage" / "breaking_KGZfN-363QY.mp4").is_file()
+
+
+def test_stage_command_refuses_a_placeholder_footage_report(tmp_path, monkeypatch) -> None:
+    """The exact report shape that shipped colour bars must not stage."""
+    public = tmp_path / "public"
+    monkeypatch.setattr(bridge, "PUBLIC_DIR", public)
+    out = tmp_path / "out"
+    clip = _make_clip(out / "footage" / "placeholder_breaking.mp4",
+                      "placeholder_breaking.mp4")
+    jobs = [{"job_id": "job-b", "style": "breaking",
+             "source_item": {"title": "Delhi HC orders report", "summary": "s"}}]
+    (out / "routes.json").write_text(json.dumps({"mode": "fixture", "jobs": jobs}))
+    (out / "footage_report.json").write_text(json.dumps({
+        "job-b": {"footage_source": "placeholder", "clips": [str(clip)],
+                  "ladder": ["SKIPPED: ytsearch1:... (Install yt-dlp)"]},
+    }))
+
+    with pytest.raises(ValueError, match="not 'live'"):
+        bridge.main(["stage", "--report", str(out / "footage_report.json"),
+                     "--routes", str(out / "routes.json"), "--out", str(out)])
+
+    assert not (out / "BreakingNewsReel.props.json").exists()
 
 
 def test_derive_plan_covers_only_renderable_styles() -> None:

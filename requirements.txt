@@ -18,3 +18,10 @@ watchfiles>=0.21
 # Social scraping (free libraries, anti-ban hardened, optional at runtime)
 instagrapi==3.0.16      # Instagram session-only search (never password login at runtime)
 twscrape==0.20.1        # X video search via human-managed account pool
+
+# Footage acquisition (required by tools/video/ytdlp_downloader.py, whose
+# dependencies field declares python:yt_dlp). Without this the breaking/trending
+# reels have NO footage source at all. YouTube extraction also needs a JS
+# runtime (Deno) on the PATH — CI installs it in .github/workflows/render-reels.yml.
+yt-dlp>=2025.1.15
+yt-dlp-ejs>=0.1.0      # YouTube's JS challenge solver (bundled with yt-dlp)

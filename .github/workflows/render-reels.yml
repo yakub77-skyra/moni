@@ -59,8 +59,18 @@ jobs:
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # yt-dlp cannot extract YouTube without a JS runtime. Without this the
+      # downloader SKIPs every URL and the reels have no footage at all.
+      - name: Install Deno (JS runtime for YouTube extraction)
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
+
       - name: Install Python deps
         run: pip install -r requirements.txt
+
+      - name: Verify footage toolchain is AVAILABLE (fail fast, never degrade)
+        run: python3 scripts/footage_ladder.py --check-toolchain
 
       - name: Install Remotion composer deps
         working-directory: remotion-composer
@@ -106,90 +116,18 @@ jobs:
         if: inputs.mode == 'daily'
         run: |
           mkdir -p out/daily
-          make daily-news
+          python3 system_layer/daily.py --scrape --max-items 5 --project-dir out/daily
 
-      - name: Footage ladder (live first, placeholder fallback)
+      # Real footage only. Queries come from each job's own headline, clips are
+      # downloaded by ytdlp_downloader and trimmed by footage_selector. This
+      # step FAILS when footage cannot be acquired: there is no placeholder
+      # fallback, because a silent one shipped test-card reels as "finished".
+      - name: Footage ladder (real footage or fail)
         run: |
-          python3 - <<'EOF'
-          import json
-          import subprocess
-          from pathlib import Path
-
-          from tools.video.ytdlp_downloader import YtdlpDownloader
-
-          out = Path("out/daily")
-          footage = out / "footage"
-          footage.mkdir(parents=True, exist_ok=True)
-          routes = json.loads((out / "routes.json").read_text(encoding="utf-8"))
-          jobs = routes["jobs"] if isinstance(routes, dict) else routes
-
-          QUERIES = {
-              "breaking": ["Yamuna flood plain Delhi news report", "Delhi High Court Yamuna encroachment news"],
-              "trending": ["Mumbai station dancing dog viral video", "funny dog dancing viral shorts"],
-              "india_daily": ["India daily news headlines"],
-          }
-          SPECS = {
-              "breaking": ("breaking.mp4", 720, 1280, 18),
-              "trending": ("trending.mp4", 720, 900, 16),
-              "india_daily": ("india_daily.mp4", 720, 1280, 18),
-          }
-
-          tool = YtdlpDownloader()
-          report = {}
-          for job in jobs:
-              style = job.get("style", "india_daily")
-              fname, width, height, seconds = SPECS.get(style, SPECS["india_daily"])
-              queries = QUERIES.get(style, QUERIES["india_daily"])
-              urls = [f"ytsearch1:{q}" for q in queries]
-              # Resolve search hits to watch URLs first (single-result search,
-              # no download), then download concrete URLs through the hardened
-              # retry matrix (player clients web_safari/android/ios/mweb).
-              watch_urls = []
-              for q in queries:
-                  try:
-                      proc = subprocess.run(
-                          ["yt-dlp", "--flat-playlist", "--print", "id", f"ytsearch1:{q}"],
-                          capture_output=True, text=True, timeout=120,
-                      )
-                      vid = (proc.stdout or "").strip().splitlines()
-                      if proc.returncode == 0 and vid and vid[0].strip():
-                          watch_urls.append(f"https://www.youtube.com/watch?v={vid[0].strip()}")
-                  except Exception:
-                      continue
-              result = tool.execute({
-                  "url": watch_urls[0] if watch_urls else urls[0],
-                  "urls": watch_urls or urls,
-                  "output_dir": str(footage),
-                  "max_resolution": "720p",
-              })
-              clips = []
-              if result.success:
-                  for item in result.data.get("items", []):
-                      if item.get("status") == "downloaded" and item.get("video_path"):
-                          clips.append(item["video_path"])
-              source = "live" if clips else "placeholder"
-              if not clips:
-                  target = footage / f"placeholder_{fname}"
-                  subprocess.run(
-                      ["ffmpeg", "-y", "-f", "lavfi", "-i",
-                       f"testsrc2=size={width}x{height}:rate=30:duration={seconds}",
-                       "-pix_fmt", "yuv420p", str(target)],
-                      check=True,
-                  )
-                  if style == "trending":
-                      clips = [str(target)] * 4  # 4 x 4s hard cuts
-                  else:
-                      clips = [str(target)]
-              report[job["job_id"]] = {
-                  "style": style,
-                  "footage_source": source,
-                  "clips": clips,
-                  "ladder": result.data.get("report", []) if hasattr(result, "data") else [],
-              }
-              print(f"{job['job_id']}: {source} ({len(clips)} clips)")
-
-          (out / "footage_report.json").write_text(json.dumps(report, indent=2))
-          EOF
+          python3 scripts/footage_ladder.py \
+            --routes out/daily/routes.json \
+            --out out/daily
+          cat out/daily/footage_report.json
 
       - name: Stage footage into public/ (fixes staticFile 404)
         run: |
