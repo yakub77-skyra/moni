@@ -110,6 +110,10 @@ class TestNoFootageMeansFailure:
         monkeypatch.setattr(footage_ladder, "build_queries", lambda job: ["q"])
         monkeypatch.setattr(
             footage_ladder, "resolve_watch_urls", lambda q, **k: ["u"])
+        # No metadata available (offline test): ranking keeps search order.
+        monkeypatch.setattr(
+            footage_ladder, "collect_candidate_meta",
+            lambda urls: [(u, None) for u in urls])
         skipped = mock.Mock()
         skipped.success = False
         skipped.data = {"items": [{"url": "u", "status": "SKIPPED",
@@ -285,3 +289,63 @@ class TestSummaryTrimming:
         assert len(out) <= render_reels_ci.MAX_SUBHEAD_CHARS + 1
         assert not out.endswith("wor…")
         assert out.endswith("…")
+
+
+def _meta(title, age_days=None, duration=120, views=1000,
+          live="not_live", uploader="SomeChannel"):
+    from datetime import date, timedelta
+    meta = {"title": title, "upload_date": None, "duration": duration,
+            "view_count": views, "live_status": live, "uploader": uploader,
+            "channel": uploader}
+    if age_days is not None:
+        meta["upload_date"] = (date.today() - timedelta(days=age_days)
+                               ).strftime("%Y%m%d")
+    return meta
+
+
+class TestCandidateRanking:
+    KEYS = ["Yamuna", "flood", "plain", "encroachments", "Delhi", "report"]
+
+    def test_exact_recent_beats_old_loose(self):
+        cands = [
+            ("old-loose", _meta("Funny cats compilation 2019", age_days=2000,
+                                duration=600, views=50_000_000)),
+            ("exact-new", _meta("Delhi Yamuna flood plain encroachments report",
+                                age_days=1, duration=180, views=5000)),
+        ]
+        ranked = footage_ladder.rank_candidates(cands, self.KEYS, "NDTV")
+        assert ranked[0][0] == "exact-new"
+        assert ranked[1][0] == "old-loose"
+
+    def test_live_and_overlong_are_excluded(self):
+        cands = [
+            ("live", _meta("Yamuna flood live", age_days=0, duration=0,
+                           live="is_live")),
+            ("upcoming", _meta("Yamuna flood report", age_days=0, duration=0,
+                               live="is_upcoming")),
+            ("toolong", _meta("Yamuna flood plain encroachments full coverage",
+                              age_days=1, duration=7200)),
+            ("good", _meta("Yamuna flood report", age_days=1, duration=120)),
+        ]
+        ranked = footage_ladder.rank_candidates(cands, self.KEYS, "NDTV")
+        assert [u for u, _, _ in ranked] == ["good"]
+
+    def test_no_metadata_keeps_search_order(self):
+        cands = [("a", None), ("b", None), ("c", None)]
+        ranked = footage_ladder.rank_candidates(cands, self.KEYS, "NDTV")
+        assert [u for u, _, _ in ranked] == ["a", "b", "c"]
+        assert all(score == 0.0 for _, score, _ in ranked)
+
+    def test_outlet_uploader_match_scores_higher(self):
+        base = dict(title="Yamuna flood report", age_days=2, duration=120)
+        cands = [("other", _meta(uploader="RandomVlogs", **base)),
+                 ("agency", _meta(uploader="NDTV News", **base))]
+        ranked = footage_ladder.rank_candidates(cands, self.KEYS, "NDTV")
+        assert ranked[0][0] == "agency"
+
+    def test_title_similarity_is_token_overlap(self):
+        keys = ["Mumbai", "station", "dancing", "dog"]
+        assert footage_ladder.title_similarity(
+            keys, "Mumbai station dancing dog viral video") == 1.0
+        assert footage_ladder.title_similarity(keys, "Cooking pasta recipe") == 0.0
+        assert 0.0 < footage_ladder.title_similarity(keys, "Dog dancing show") < 1.0

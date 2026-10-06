@@ -175,6 +175,139 @@ def resolve_watch_urls(queries: list[str], per_query: int = 4) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
+# Ranking: YouTube relevance order is NOT news-exactness — the first result for
+# a generic query is often an old, loosely-related popular video. Rank by how
+# closely a candidate matches THIS story instead.
+MAX_DOWNLOAD_CANDIDATES = 6  # trending needs up to 6 inputs; bounds GBs/time
+FRESH_DAYS = 14  # uploaded within this -> strong recency bonus (news cycle)
+RECENT_DAYS = 60  # within this -> small bonus; older is still downloadable
+MAX_SOURCE_SECONDS = 600  # mirrors ytdlp_downloader's default cap
+
+
+def title_similarity(keywords: list[str], title: str) -> float:
+    """Token overlap between headline keywords and a candidate video title."""
+    title_tokens = set(headline_keywords(title, limit=24))
+    if not keywords or not title_tokens:
+        return 0.0
+    keyed = {k.lower() for k in keywords}
+    return len(keyed & {t.lower() for t in title_tokens}) / len(keyed)
+
+
+def _upload_age_days(upload_date: Any) -> float | None:
+    """Age of a yt-dlp `upload_date` (YYYYMMDD) in days, else None."""
+    try:
+        from datetime import date
+        uploaded = date(
+            int(str(upload_date)[:4]), int(str(upload_date)[4:6]),
+            int(str(upload_date)[6:8]))
+        return float((date.today() - uploaded).days)
+    except (TypeError, ValueError):
+        return None
+
+
+def rank_candidates(candidates: list[tuple[str, dict[str, Any] | None]],
+                    keywords: list[str], outlet: str,
+                    max_duration: int = MAX_SOURCE_SECONDS
+                    ) -> list[tuple[str, float, str]]:
+    """Order (url, metadata) pairs by story fit. Pure — no I/O, fully tested.
+
+    Score = title similarity (0..1) + recency bonus + outlet/uploader bonus +
+    tiny views tiebreak. Live/upcoming and overlong sources are excluded (they
+    cannot be trimmed). Candidates WITHOUT metadata keep search order at
+    score 0 — ranking must never drop a candidate the metadata pass couldn't
+    read (e.g. IP-blocked extraction still allows search + download attempts).
+    """
+    outlet_tokens = {t.lower() for t in headline_keywords(outlet, limit=6)}
+    scored: list[tuple[str, float, str]] = []
+    for position, (url, meta) in enumerate(candidates):
+        if not meta:
+            scored.append((url, 0.0, "unranked (no metadata)"))
+            continue
+        live = str(meta.get("live_status") or "")
+        if live in ("is_live", "is_upcoming"):
+            continue  # cannot trim a stream that has not ended
+        duration = meta.get("duration")
+        if isinstance(duration, (int, float)) and duration > max_duration:
+            continue  # the downloader would skip it anyway; don't waste attempts
+        title = str(meta.get("title") or "")
+        sim = title_similarity(keywords, title)
+        age = _upload_age_days(meta.get("upload_date"))
+        recency = 0.0
+        if age is not None and age >= 0:
+            recency = 0.3 if age <= FRESH_DAYS else (
+                0.15 if age <= RECENT_DAYS else 0.0)
+        uploader = str(meta.get("uploader") or meta.get("channel") or "")
+        uploader_bonus = 0.0
+        if outlet_tokens and not _is_placeholder_outlet(outlet):
+            up_tokens = {t.lower() for t in headline_keywords(uploader, limit=12)}
+            if outlet_tokens & up_tokens or outlet.lower() in uploader.lower():
+                uploader_bonus = 0.1
+        views = meta.get("view_count") or 0
+        views_bonus = 0.0
+        try:
+            import math
+            views_bonus = min(math.sqrt(float(views)) / 2000.0, 0.05)
+        except (TypeError, ValueError):
+            pass
+        score = sim + recency + uploader_bonus + views_bonus
+        age_text = f"{age:.0f}d old" if age is not None and age >= 0 else "age?"
+        scored.append((url, score,
+                       f"sim={sim:.2f} {age_text} views={views} "
+                       f"title={title[:70]!r}"))
+    # Stable: metadata-less candidates keep search order among themselves.
+    scored.sort(key=lambda row: row[1], reverse=True)
+    return scored
+
+
+def collect_candidate_meta(urls: list[str]) -> list[tuple[str, dict[str, Any] | None]]:
+    """One metadata-only pass over candidates (no bytes downloaded).
+
+    Never raises and never drops a URL: any per-URL failure yields None and
+    the ranker keeps search order for it. Uses the same proxy/cookies as
+    search so an authenticated/residential route applies here too.
+    """
+    try:
+        import yt_dlp  # type: ignore
+    except ImportError:
+        return [(u, None) for u in urls]
+
+    opts: dict[str, Any] = {"quiet": True, "no_warnings": True,
+                             "skip_download": True, "socket_timeout": 15}
+    proxy = os.environ.get("YTDLP_PROXY_URL", "").strip()
+    if proxy:
+        opts["proxy"] = proxy
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_file and Path(cookies_file).is_file():
+        opts["cookiefile"] = cookies_file
+
+    out: list[tuple[str, dict[str, Any] | None]] = []
+    try:
+        ydl = yt_dlp.YoutubeDL(opts)
+        for url in urls:
+            try:
+                info = ydl.extract_info(url, download=False)
+            except Exception as exc:
+                print(f"  metadata unreadable for {url}: {exc}", flush=True)
+                out.append((url, None))
+                continue
+            if not isinstance(info, dict):
+                out.append((url, None))
+                continue
+            out.append((url, {
+                "title": info.get("title"),
+                "upload_date": info.get("upload_date"),
+                "duration": info.get("duration"),
+                "view_count": info.get("view_count"),
+                "live_status": info.get("live_status"),
+                "uploader": info.get("uploader"),
+                "channel": info.get("channel"),
+            }))
+    except Exception as exc:
+        print(f"  metadata pass failed ({exc}); keeping search order", flush=True)
+        return [(u, None) for u in urls]
+    return out
+
+
 def acquire_clips(job: dict[str, Any], raw_dir: Path) -> dict[str, Any]:
     """Download real footage for one job. Returns a footage_report entry.
 
@@ -208,9 +341,31 @@ def acquire_clips(job: dict[str, Any], raw_dir: Path) -> dict[str, Any]:
         }
 
     print(f"  {len(watch_urls)} candidate URL(s) for {queries[0]!r}", flush=True)
+    item = job.get("source_item", job)
+    ranked = rank_candidates(
+        collect_candidate_meta(watch_urls),
+        headline_keywords(str(item.get("title", ""))),
+        str(item.get("outlet", "")).strip())
+    kept = {url for url, _, _ in ranked}
+    for url in watch_urls:
+        if url not in kept:
+            print(f"    excluded (live/upcoming or "
+                  f">{MAX_SOURCE_SECONDS}s source): {url}", flush=True)
+    for url, score, reason in ranked:
+        print(f"    score={score:.2f} {reason}\n      {url}", flush=True)
+    top_urls = [url for url, _, _ in ranked[:MAX_DOWNLOAD_CANDIDATES]]
+    if not top_urls:
+        return {
+            "style": style,
+            "footage_source": "missing",
+            "clips": [],
+            "ladder": ["every candidate excluded (live/upcoming streams or "
+                       f"sources longer than {MAX_SOURCE_SECONDS}s)"],
+        }
+
     download = YtdlpDownloader().execute({
-        "url": watch_urls[0],
-        "urls": watch_urls,
+        "url": top_urls[0],
+        "urls": top_urls,
         "output_dir": str(raw_dir),
         "max_resolution": MAX_RESOLUTION,
     })
