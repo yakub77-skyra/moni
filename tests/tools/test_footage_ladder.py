@@ -63,8 +63,25 @@ class TestQueriesComeFromTheHeadline:
         assert not any("dancing dog" in q for q in queries)
 
     def test_outlet_adds_a_second_query(self):
+        job = {"job_id": "x", "style": "trending",
+               "source_item": {"title": "Mumbai station dancing dog video crosses 2 million views",
+                               "outlet": "NDTV"}}
+        queries = footage_ladder.build_queries(job)
+        assert any(q.startswith("NDTV") for q in queries)
+
+    def test_placeholder_outlet_is_skipped(self):
+        # Fixture outlets like "Example News" can never match YouTube — the
+        # regression that made every fixture run search for a fake outlet.
         queries = footage_ladder.build_queries(TRENDING_JOB)
-        assert any(q.startswith("Example News") for q in queries)
+        assert not any("Example News" in q for q in queries)
+
+    def test_long_headline_gets_graduated_fallback_queries(self):
+        # 12-word fixture headline: full phrase is unmatchable, but the
+        # short/minimal fallbacks keep THIS story's leading keywords.
+        queries = footage_ladder.build_queries(TRENDING_JOB)
+        assert len(queries) >= 3
+        assert queries[0].endswith("viral video")
+        assert "Mumbai station dancing" in queries[-1]
 
     def test_headline_with_no_usable_words_yields_no_queries(self):
         job = {"job_id": "x", "style": "breaking",

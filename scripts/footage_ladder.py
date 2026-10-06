@@ -53,6 +53,17 @@ STYLE_QUERY_SUFFIX = {
     "trending": "viral video",
 }
 
+# Outlets that can never match a real YouTube result. Fixture jobs use
+# "Example News" / example.com; searching for it guarantees zero hits and
+# masks the real query. Real outlets are kept.
+PLACEHOLDER_OUTLET_MARKERS = ("example", "test outlet", "sample news")
+
+
+def _is_placeholder_outlet(outlet: str) -> bool:
+    lowered = str(outlet or "").strip().lower()
+    return not lowered or any(m in lowered for m in PLACEHOLDER_OUTLET_MARKERS)
+
+
 # Headline words too generic to search on — they match everything and return
 # the same unrelated clip for every job.
 STOPWORDS = frozenset({
@@ -68,12 +79,28 @@ STOPWORDS = frozenset({
 def headline_keywords(title: str, limit: int = 12) -> list[str]:
     """Meaningful search terms from a headline, stopwords removed."""
     words = re.findall(r"[A-Za-z0-9']+", str(title or ""))
-    kept = [w for w in words if w.lower() not in STOPWORDS and len(w) > 2]
+    kept: list[str] = []
+    for w in words:
+        # Strip headline quoting ("'dancing dog'") — a leading apostrophe
+        # makes the YouTube query unmatchable and leaks punctuation.
+        clean = w.strip("'")
+        if clean.lower() not in STOPWORDS and len(clean) > 2:
+            kept.append(clean)
     return kept[:limit]
 
 
 def build_queries(job: dict[str, Any]) -> list[str]:
-    """Search queries derived from THIS job's headline, not a fixture."""
+    """Search queries derived from THIS job's headline, not a fixture.
+
+    Graduated specific -> generic: YouTube's `ytsearch` treats a 12-word
+    headline as a near-exact phrase, so a fictional or overly-specific
+    headline (e.g. the fixture "dancing dog ... best conductor") returns
+    zero hits and the run fails even though topical footage exists. The
+    short (6-word) and minimal (3-word) fallbacks still describe THIS story
+    — they just drop the tail that makes the phrase unmatchable. The ladder
+    tries each query in order and aggregates URLs, so the first query that
+    matches wins; all results stay real downloads, never synthetic.
+    """
     style = job.get("style", "")
     item = job.get("source_item", job)
     title = str(item.get("title", ""))
@@ -81,11 +108,24 @@ def build_queries(job: dict[str, Any]) -> list[str]:
     keywords = headline_keywords(title)
     if not keywords:
         return []
-    phrase = " ".join(keywords)
     suffix = STYLE_QUERY_SUFFIX.get(style, "")
-    queries = [f"{phrase} {suffix}".strip()]
-    if outlet:
-        queries.append(f"{outlet} {phrase}")
+    queries: list[str] = []
+
+    def _add(query: str) -> None:
+        query = " ".join(query.split())
+        if query and query not in queries:
+            queries.append(query)
+
+    _add(f"{' '.join(keywords)} {suffix}".strip())
+    if len(keywords) > 6:
+        _add(f"{' '.join(keywords[:6])} {suffix}".strip())
+    if len(keywords) > 3:
+        _add(f"{' '.join(keywords[:3])} {suffix}".strip())
+    if not _is_placeholder_outlet(outlet):
+        # Outlet query uses the short phrase: "<outlet> + full 12-word
+        # headline" is doubly unmatchable. Real outlets only — fixture
+        # outlets like "Example News" can never match YouTube.
+        _add(f"{outlet} {' '.join(keywords[:6])}".strip())
     return queries
 
 
@@ -125,7 +165,9 @@ def resolve_watch_urls(queries: list[str], per_query: int = 4) -> list[str]:
         except Exception as exc:  # one bad query must not kill the ladder
             print(f"  search failed for {query!r}: {exc}", flush=True)
             continue
-        for entry in (info or {}).get("entries") or []:
+        entries = (info or {}).get("entries") or []
+        print(f"  search {query!r} -> {len(entries)} result(s)", flush=True)
+        for entry in entries:
             video_id = entry.get("id") if isinstance(entry, dict) else None
             if video_id:
                 urls.append(f"https://www.youtube.com/watch?v={video_id}")
@@ -159,7 +201,10 @@ def acquire_clips(job: dict[str, Any], raw_dir: Path) -> dict[str, Any]:
             "style": style,
             "footage_source": "missing",
             "clips": [],
-            "ladder": [f"search returned no results for {queries}"],
+            "ladder": [f"search returned no results for {queries} "
+                       f"(tried {len(queries)} graduated querie(s); "
+                       f"toolchain was OK — this is a query/coverage miss, "
+                       f"not a missing yt-dlp/Deno)"],
         }
 
     print(f"  {len(watch_urls)} candidate URL(s) for {queries[0]!r}", flush=True)
@@ -306,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     routes = json.loads(Path(args.routes).read_text(encoding="utf-8"))
+    mode = routes.get("mode", "") if isinstance(routes, dict) else ""
     jobs = routes["jobs"] if isinstance(routes, dict) else routes
 
     report: dict[str, Any] = {}
@@ -342,15 +388,35 @@ def main(argv: list[str] | None = None) -> int:
 
     if failures:
         print("\nFATAL: no real footage for: " + ", ".join(failures), flush=True)
-        print(
-            "Real news footage is mandatory for these reels "
-            "(breaking_news_director.md: 'AI b-roll is forbidden').\n"
-            "This run refuses to substitute synthetic placeholder footage.\n"
-            "Likely causes: yt-dlp not installed, no Deno JS runtime for "
-            "YouTube, or YouTube rate-limiting the runner.\n"
-            "See the step log above for the per-URL SKIPPED reasons.",
-            file=sys.stderr, flush=True,
-        )
+        if mode == "fixture":
+            print(
+                "Real news footage is mandatory for these reels "
+                "(breaking_news_director.md: 'AI b-roll is forbidden').\n"
+                "This run refuses to substitute synthetic placeholder footage.\n"
+                "This was a fixture run with fictional headlines — when every "
+                "graduated query (see 'search ... -> 0 result(s)' lines above) "
+                "returns nothing, the headline itself has no YouTube coverage. "
+                "Fix: use searchable fixture headlines, or keep the graduated "
+                "queries from build_queries so the short/minimal fallback finds "
+                "topical footage.\n"
+                "If a daily (real-news) run hits this, check YouTube "
+                "rate-limiting first: set YTDLP_PROXY_URL and/or the "
+                "YTDLP_COOKIES secret, and see the per-URL SKIPPED reasons above.",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            print(
+                "Real news footage is mandatory for these reels "
+                "(breaking_news_director.md: 'AI b-roll is forbidden').\n"
+                "This run refuses to substitute synthetic placeholder footage.\n"
+                "Likely causes: headline too specific for YouTube search "
+                "(see graduated queries above), YouTube rate-limiting the runner "
+                "(set YTDLP_PROXY_URL and/or YTDLP_COOKIES secret), yt-dlp not "
+                "installed, or no Deno JS runtime for YouTube.\n"
+                "See the step log above for the per-query result counts and "
+                "per-URL SKIPPED reasons.",
+                file=sys.stderr, flush=True,
+            )
         return 1
 
     print(f"\nAll {len(report)} job(s) got real footage.", flush=True)
