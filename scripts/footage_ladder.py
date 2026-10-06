@@ -388,7 +388,33 @@ def main(argv: list[str] | None = None) -> int:
 
     if failures:
         print("\nFATAL: no real footage for: " + ", ".join(failures), flush=True)
-        if mode == "fixture":
+        # Stage-aware hint: a download block (SKIPPED URLs) needs proxy/cookies,
+        # a search miss (no URLs at all) needs better queries. The mode-based
+        # coverage text below is wrong when search succeeded but every download
+        # was refused, so check the ladders first.
+        download_blocked = any(
+            "SKIPPED" in line or "blocked" in line.lower()
+            for job_id in failures
+            for line in (report.get(job_id, {}).get("ladder") or [])
+        )
+        if download_blocked:
+            print(
+                "Real news footage is mandatory for these reels "
+                "(breaking_news_director.md: 'AI b-roll is forbidden').\n"
+                "This run refuses to substitute synthetic placeholder footage.\n"
+                "Search found candidate videos, but YouTube refused every "
+                "download ('Sign in to confirm you're not a bot' / 403 / 429), "
+                "even after retrying all player clients. This is an IP block "
+                "on the GitHub runner, not a query problem.\n"
+                "Fix, in order:\n"
+                "  1. Re-export YTDLP_COOKIES fresh from a logged-in browser "
+                "('Get cookies.txt LOCALLY') — stale cookies are challenged first.\n"
+                "  2. Set YTDLP_PROXY_URL (workflow input ytdlp_proxy_url or "
+                "secret) to route YouTube via your own residential IP. Only "
+                "search+download use it; rendering stays on GitHub.",
+                file=sys.stderr, flush=True,
+            )
+        elif mode == "fixture":
             print(
                 "Real news footage is mandatory for these reels "
                 "(breaking_news_director.md: 'AI b-roll is forbidden').\n"

@@ -138,6 +138,50 @@ class TestNoFootageMeansFailure:
         report = json.loads((out / "footage_report.json").read_text(encoding="utf-8"))
         assert report[BREAKING_JOB["job_id"]]["footage_source"] == "missing"
 
+    def test_download_block_hint_names_proxy_not_queries(
+            self, tmp_path, capsys):
+        """SKIPPED ladders mean IP block: hint must say proxy, not coverage."""
+        routes = tmp_path / "routes.json"
+        routes.write_text(json.dumps({"mode": "fixture", "jobs": [BREAKING_JOB]}),
+                          encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        blocked = {
+            "style": "breaking", "footage_source": "missing", "clips": [],
+            "ladder": ["SKIPPED: https://www.youtube.com/watch?v=x "
+                       "(Sign in to confirm you're not a bot); "
+                       "route=direct (GitHub runner IP); "
+                       "clients tried: web_safari, android, ios, mweb"]}
+
+        with mock.patch.object(footage_ladder, "acquire_clips",
+                               mock.Mock(return_value=blocked)):
+            code = footage_ladder.main(
+                ["--routes", str(routes), "--out", str(out)])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "YTDLP_PROXY_URL" in err
+        assert "IP block" in err
+
+    def test_search_miss_hint_names_queries_not_proxy(self, tmp_path, capsys):
+        """Empty ladders mean coverage miss: hint must say queries."""
+        routes = tmp_path / "routes.json"
+        routes.write_text(json.dumps({"mode": "fixture", "jobs": [BREAKING_JOB]}),
+                          encoding="utf-8")
+        out = tmp_path / "out"
+        out.mkdir()
+        no_results = {
+            "style": "breaking", "footage_source": "missing", "clips": [],
+            "ladder": ["search returned no results for ['q1', 'q2'] "
+                       "(tried 2 graduated querie(s))"]}
+        with mock.patch.object(footage_ladder, "acquire_clips",
+                               mock.Mock(return_value=no_results)):
+            code = footage_ladder.main(
+                ["--routes", str(routes), "--out", str(out)])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "graduated" in err
+        assert "IP block" not in err
+
     def test_main_exits_zero_when_all_jobs_get_live_footage(self, tmp_path):
         routes = tmp_path / "routes.json"
         routes.write_text(json.dumps({"jobs": [BREAKING_JOB]}),
