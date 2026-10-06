@@ -4,10 +4,21 @@ Thin guard over yt-dlp: blocklists TikTok (banned in India), defaults to
 `assets/raw/`, and returns a local file path for footage_selector.
 Delegates the actual download to the `yt_dlp` Python package when present,
 else the `yt-dlp` binary. No URL is ever fabricated.
+
+IP-block escape hatch (GitHub Actions datacenter IPs get 403/429 from
+YouTube): set a proxy pointing at your own network and ONLY YouTube/search
+traffic goes through it — heavy Remotion/FFmpeg rendering stays on GitHub.
+Env (also accepted as per-call inputs `proxy`, `cookies_file`,
+`cookies_from_browser`):
+
+  YTDLP_PROXY_URL=http://user:pass@your-home-ip:port
+  YTDLP_COOKIES_FILE=/path/to/youtube-cookies.txt   (Netscape format)
+  YTDLP_COOKIES_FROM_BROWSER=chrome                 (local runs only)
 """
 
 from __future__ import annotations
 
+import os
 import random
 import shutil
 import time
@@ -61,9 +72,45 @@ def _client_backoff(attempt: int) -> float:
     return random.uniform(3.0, 8.0) + attempt
 
 
+def _resolve_proxy(explicit: str | None = None) -> str | None:
+    """Proxy URL for YouTube/search traffic (your own IP, not GitHub's).
+
+    Precedence: explicit per-call `proxy` input > YTDLP_PROXY_URL env >
+    HTTPS_PROXY/HTTP_PROXY env (honoured so a runner-level proxy also works).
+    Empty/blank values mean "no proxy" (current GitHub-direct behaviour).
+    """
+    for candidate in (
+        explicit,
+        os.environ.get("YTDLP_PROXY_URL"),
+        os.environ.get("HTTPS_PROXY"),
+        os.environ.get("HTTP_PROXY"),
+        os.environ.get("https_proxy"),
+        os.environ.get("http_proxy"),
+    ):
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+    return None
+
+
+def _resolve_cookies_file(explicit: str | None = None) -> str | None:
+    """Netscape cookies file for authenticated YouTube reads, if configured."""
+    candidate = explicit or os.environ.get("YTDLP_COOKIES_FILE")
+    if candidate and str(candidate).strip() and Path(str(candidate).strip()).is_file():
+        return str(candidate).strip()
+    return None
+
+
+def _resolve_cookies_from_browser(explicit: str | None = None) -> str | None:
+    """Browser name for --cookies-from-browser (local runs only, never CI)."""
+    candidate = explicit or os.environ.get("YTDLP_COOKIES_FROM_BROWSER")
+    if candidate and str(candidate).strip():
+        return str(candidate).strip()
+    return None
+
+
 class YtdlpDownloader(BaseTool):
     name = "ytdlp_downloader"
-    version = "0.1.1"
+    version = "0.2.0"
     tier = ToolTier.SOURCE
     capability = "clip_acquisition"
     provider = "yt-dlp"
@@ -75,13 +122,16 @@ class YtdlpDownloader(BaseTool):
     dependencies = ["python:yt_dlp"]
     install_instructions = (
         "Install yt-dlp: pip install yt-dlp\n"
-        "For YouTube support, also install Deno (JS runtime): https://deno.land/#installation"
+        "For YouTube support, also install Deno (JS runtime): https://deno.land/#installation\n"
+        "IP-blocked on GitHub Actions (403/429)? Route YouTube via your own IP:\n"
+        "  YTDLP_PROXY_URL=http://user:pass@your-home-ip:port  (only YouTube/search uses it)"
     )
     agent_skills = ["video-download"]
 
     capabilities = ["download_video_url", "fetch_reel_footage", "fetch_trailer_footage"]
     supports = {"tiktok_blocked": True, "default_dir": "assets/raw",
-                "player_client_retry": True, "batch_urls": True}
+                "player_client_retry": True, "batch_urls": True,
+                "proxy": True, "cookies_file": True, "cookies_from_browser": True}
     best_for = [
         "downloading IG Reels / YT Shorts / trailer URLs found by search tools",
         "acquiring real footage for breaking and trending reels",
@@ -102,6 +152,18 @@ class YtdlpDownloader(BaseTool):
                      "description": "Optional batch: per-item SKIPPED with reason, never aborts"},
             "output_dir": {"type": "string", "default": "assets/raw"},
             "max_resolution": {"type": "string", "default": "720p"},
+            "proxy": {"type": "string",
+                      "description": "Optional proxy URL for this call (overrides "
+                                     "YTDLP_PROXY_URL). Routes YouTube/search via your "
+                                     "own IP instead of the GitHub datacenter IP."},
+            "cookies_file": {"type": "string",
+                             "description": "Optional Netscape cookies file for "
+                                            "authenticated YouTube reads (overrides "
+                                            "YTDLP_COOKIES_FILE)."},
+            "cookies_from_browser": {"type": "string",
+                                     "description": "Optional browser name for "
+                                                    "yt-dlp --cookies-from-browser "
+                                                    "(local runs only, never CI)."},
         },
     }
 
@@ -175,12 +237,29 @@ class YtdlpDownloader(BaseTool):
     def _format(self, height: int) -> str:
         return f"bv*[height<={height}]+ba/b[height<={height}]/b/best"
 
+    def _redact_proxy(self, proxy: str | None) -> str:
+        """Proxy host for logs — never leak user:pass credentials."""
+        if not proxy:
+            return "direct (GitHub runner IP)"
+        try:
+            parsed = urllib.parse.urlparse(proxy)
+            host = parsed.hostname or "proxy"
+            port = f":{parsed.port}" if parsed.port else ""
+            return f"{host}{port}"
+        except Exception:
+            return "proxy"
+
     def _download_one(self, url: str, inputs: dict[str, Any], start: float) -> ToolResult:
         output_dir = Path(inputs.get("output_dir") or "assets/raw")
         output_dir.mkdir(parents=True, exist_ok=True)
         height = {"360p": 360, "480p": 480, "720p": 720, "1080p": 1080}.get(
             str(inputs.get("max_resolution", "720p")), 720
         )
+        # Your-own-IP routing: only YouTube/search traffic uses the proxy.
+        proxy = _resolve_proxy(inputs.get("proxy"))
+        cookies_file = _resolve_cookies_file(inputs.get("cookies_file"))
+        cookies_browser = _resolve_cookies_from_browser(inputs.get("cookies_from_browser"))
+        route = self._redact_proxy(proxy)
 
         try:
             import yt_dlp  # type: ignore
@@ -190,7 +269,10 @@ class YtdlpDownloader(BaseTool):
         if yt_dlp is not None:
             template = str(output_dir / "%(id)s.%(ext)s")
             try:
-                return self._download_via_package(yt_dlp, url, height, template, start)
+                return self._download_via_package(
+                    yt_dlp, url, height, template, start,
+                    proxy=proxy, cookies_file=cookies_file,
+                    cookies_browser=cookies_browser, route=route)
             except Exception as exc:
                 if not _looks_like_block(exc):
                     return ToolResult(success=False, error=f"yt-dlp download failed: {exc}")
@@ -199,15 +281,21 @@ class YtdlpDownloader(BaseTool):
                     time.sleep(_client_backoff(attempt))
                     try:
                         return self._download_via_package(
-                            yt_dlp, url, height, template, start, player_client=client)
+                            yt_dlp, url, height, template, start, player_client=client,
+                            proxy=proxy, cookies_file=cookies_file,
+                            cookies_browser=cookies_browser, route=route)
                     except Exception as retry_exc:
                         last = retry_exc
                         if not _looks_like_block(retry_exc):
                             break
                 tried = ", ".join(PLAYER_CLIENTS)
+                hint = "" if proxy else (
+                    "; IP-blocked on GitHub Actions? Set YTDLP_PROXY_URL to route "
+                    "YouTube via your own IP")
                 return ToolResult(
                     success=False,
-                    error=f"SKIPPED: yt-dlp blocked for {url} ({last}); clients tried: {tried}",
+                    error=f"SKIPPED: yt-dlp blocked for {url} ({last}); "
+                          f"route={route}; clients tried: {tried}{hint}",
                 )
 
         binary = shutil.which("yt-dlp")
@@ -220,36 +308,52 @@ class YtdlpDownloader(BaseTool):
             if attempt > 0:
                 time.sleep(_client_backoff(attempt - 1))
             try:
-                self._download_via_binary(binary, url, height, out_template, client)
+                self._download_via_binary(binary, url, height, out_template, client,
+                                          proxy=proxy, cookies_file=cookies_file,
+                                          cookies_browser=cookies_browser)
                 break
             except Exception as exc:
                 last_err = str(exc)
                 if not _looks_like_block(exc):
                     return ToolResult(success=False, error=f"yt-dlp binary failed: {exc}")
         else:
+            hint = "" if proxy else (
+                "; IP-blocked on GitHub Actions? Set YTDLP_PROXY_URL to route "
+                "YouTube via your own IP")
             return ToolResult(
                 success=False,
-                error=f"SKIPPED: yt-dlp binary blocked for {url} ({last_err})",
+                error=f"SKIPPED: yt-dlp binary blocked for {url} ({last_err}); "
+                      f"route={route}{hint}",
             )
         files = sorted(output_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not files:
             return ToolResult(success=False, error="yt-dlp finished but no file appeared")
         return ToolResult(
             success=True,
-            data={"video_path": str(files[0]), "source_url": url},
+            data={"video_path": str(files[0]), "source_url": url, "route": route},
             artifacts=[str(files[0])],
             duration_seconds=round(time.time() - start, 2),
         )
 
     def _download_via_package(self, yt_dlp: Any, url: str, height: int,
                               template: str, start: float,
-                              player_client: str | None = None) -> ToolResult:
+                              player_client: str | None = None,
+                              proxy: str | None = None,
+                              cookies_file: str | None = None,
+                              cookies_browser: str | None = None,
+                              route: str = "") -> ToolResult:
         opts: dict[str, Any] = {
             "format": self._format(height),
             "outtmpl": template,
             "quiet": True,
             "no_warnings": True,
         }
+        if proxy:
+            opts["proxy"] = proxy
+        if cookies_file:
+            opts["cookiefile"] = cookies_file
+        if cookies_browser:
+            opts["cookiesfrombrowser"] = (cookies_browser,)
         if player_client:
             opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -263,6 +367,7 @@ class YtdlpDownloader(BaseTool):
                 "duration": (info or {}).get("duration"),
                 "uploader": (info or {}).get("uploader", ""),
                 "source_url": url,
+                "route": route or self._redact_proxy(proxy),
                 **({"player_client": player_client} if player_client else {}),
             },
             artifacts=[str(path)],
@@ -270,11 +375,20 @@ class YtdlpDownloader(BaseTool):
         )
 
     def _download_via_binary(self, binary: str, url: str, height: int,
-                             out_template: str, player_client: str | None) -> None:
+                             out_template: str, player_client: str | None,
+                             proxy: str | None = None,
+                             cookies_file: str | None = None,
+                             cookies_browser: str | None = None) -> None:
         args = [
             binary, "-f", self._format(height),
             "-o", out_template, "--print", "after_move:filepath",
         ]
+        if proxy:
+            args += ["--proxy", proxy]
+        if cookies_file:
+            args += ["--cookies", cookies_file]
+        if cookies_browser:
+            args += ["--cookies-from-browser", cookies_browser]
         if player_client:
             args += ["--extractor-args", f"youtube:player_client={player_client}"]
         args.append(url)

@@ -182,3 +182,82 @@ def test_tiktok_still_blocklisted(tmp_path) -> None:
                            "output_dir": str(tmp_path)})
     assert not result.success
     assert "Blocked host" in (result.error or "")
+
+
+def test_proxy_from_env_reaches_yt_dlp_opts(tmp_path, monkeypatch) -> None:
+    for var in ("YTDLP_PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
+                "https_proxy", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    seen, _ = _install_fake_yt_dlp(monkeypatch, [
+        {"id": "px1", "title": "t", "duration": 10, "uploader": "u"},
+    ])
+    monkeypatch.setattr("tools.video.ytdlp_downloader.random.uniform",
+                        lambda a, b: 3.0)
+    monkeypatch.setenv("YTDLP_PROXY_URL", "http://user:pass@home-ip:3128")
+    tool = YtdlpDownloader()
+    result = tool.execute({"url": "https://youtube.com/watch?v=px1",
+                           "output_dir": str(tmp_path)})
+    assert result.success
+    assert seen[0].get("proxy") == "http://user:pass@home-ip:3128"
+    # logs must carry the route but the result data must not leak creds
+    assert result.data["route"] == "home-ip:3128"
+    assert "pass" not in result.data["route"]
+
+
+def test_explicit_proxy_beats_env_and_blank_means_direct(tmp_path, monkeypatch) -> None:
+    for var in ("YTDLP_PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
+                "https_proxy", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    seen, _ = _install_fake_yt_dlp(monkeypatch, [
+        {"id": "a", "title": "t", "duration": 5, "uploader": "u"},
+        {"id": "b", "title": "t", "duration": 5, "uploader": "u"},
+    ])
+    monkeypatch.setattr("tools.video.ytdlp_downloader.random.uniform",
+                        lambda a, b: 3.0)
+    monkeypatch.setenv("YTDLP_PROXY_URL", "http://env:env@env-host:3128")
+    tool = YtdlpDownloader()
+    first = tool.execute({"url": "https://youtube.com/watch?v=a",
+                          "output_dir": str(tmp_path),
+                          "proxy": "http://me:secret@mine:8888"})
+    assert first.success and seen[0].get("proxy") == "http://me:secret@mine:8888"
+    monkeypatch.delenv("YTDLP_PROXY_URL")
+    for var in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    second = tool.execute({"url": "https://youtube.com/watch?v=b",
+                           "output_dir": str(tmp_path)})
+    assert second.success and "proxy" not in seen[1]
+
+
+def test_cookies_file_flows_into_opts(tmp_path, monkeypatch) -> None:
+    for var in ("YTDLP_PROXY_URL", "YTDLP_COOKIES_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    seen, _ = _install_fake_yt_dlp(monkeypatch, [
+        {"id": "c", "title": "t", "duration": 5, "uploader": "u"},
+    ])
+    monkeypatch.setattr("tools.video.ytdlp_downloader.random.uniform",
+                        lambda a, b: 3.0)
+    jar = tmp_path / "cookies.txt"
+    jar.write_text("# Netscape HTTP Cookie File\n")
+    tool = YtdlpDownloader()
+    result = tool.execute({"url": "https://youtube.com/watch?v=c",
+                           "output_dir": str(tmp_path),
+                           "cookies_file": str(jar)})
+    assert result.success
+    assert seen[0].get("cookiefile") == str(jar)
+
+
+def test_block_error_without_proxy_points_at_proxy_fix(tmp_path, monkeypatch) -> None:
+    for var in ("YTDLP_PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
+                "https_proxy", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    _install_fake_yt_dlp(monkeypatch, [_block()])
+    monkeypatch.setattr("tools.video.ytdlp_downloader.random.uniform",
+                        lambda a, b: 3.0)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.delenv("YTDLP_PROXY_URL", raising=False)
+    tool = YtdlpDownloader()
+    result = tool.execute({"url": "https://youtube.com/watch?v=nope",
+                           "output_dir": str(tmp_path)})
+    assert not result.success
+    assert "YTDLP_PROXY_URL" in (result.error or "")
+    assert "route=direct" in (result.error or "")

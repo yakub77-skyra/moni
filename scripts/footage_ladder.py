@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +93,8 @@ def resolve_watch_urls(queries: list[str], per_query: int = 4) -> list[str]:
     """Search YouTube and return concrete watch URLs (search-only, no download).
 
     Uses the yt_dlp package so this works wherever `pip install yt-dlp` ran,
-    with no separate binary on PATH.
+    with no separate binary on PATH. Search traffic honours YTDLP_PROXY_URL so
+    it leaves from your own IP instead of the GitHub datacenter IP.
     """
     try:
         import yt_dlp  # type: ignore
@@ -104,6 +107,17 @@ def resolve_watch_urls(queries: list[str], per_query: int = 4) -> list[str]:
     urls: list[str] = []
     opts = {"quiet": True, "no_warnings": True, "skip_download": True,
             "extract_flat": True}
+    proxy = os.environ.get("YTDLP_PROXY_URL", "").strip()
+    if proxy:
+        opts["proxy"] = proxy
+        try:
+            host = urllib.parse.urlparse(proxy).hostname or "proxy"
+        except Exception:
+            host = "proxy"
+        print(f"youtube search route: {host}", flush=True)
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_file and Path(cookies_file).is_file():
+        opts["cookiefile"] = cookies_file
     for query in queries:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:

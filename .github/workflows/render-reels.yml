@@ -21,6 +21,16 @@ on:
         options:
           - fixture
           - daily
+      ytdlp_proxy_url:
+        description: "Optional proxy for YouTube search+download only (your own IP, e.g. http://user:pass@home-ip:port). Leave blank for direct."
+        required: false
+        default: ""
+        type: string
+      ytdlp_cookies_secret:
+        description: "Deprecated: cookies are now auto-used from the YTDLP_COOKIES secret when present. Leave blank."
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: render-reels
@@ -122,8 +132,33 @@ jobs:
       # downloaded by ytdlp_downloader and trimmed by footage_selector. This
       # step FAILS when footage cannot be acquired: there is no placeholder
       # fallback, because a silent one shipped test-card reels as "finished".
+      # IP-block note: YouTube 403/429s from GitHub datacenter IPs are routed
+      # via YOUR proxy (inputs.ytdlp_proxy_url or YTDLP_PROXY_URL secret) —
+      # only search+download use it; Remotion/FFmpeg rendering stays on GitHub.
       - name: Footage ladder (real footage or fail)
+        env:
+          YTDLP_PROXY_URL: ${{ inputs.ytdlp_proxy_url || secrets.YTDLP_PROXY_URL }}
+          # Auto-used when present: just create the YTDLP_COOKIES secret with
+          # the whole Netscape cookies.txt content — no input needed per run.
+          YTDLP_COOKIES_CONTENT: ${{ secrets.YTDLP_COOKIES }}
         run: |
+          if [ -n "${YTDLP_COOKIES_CONTENT:-}" ]; then
+            printf '%s' "$YTDLP_COOKIES_CONTENT" > /tmp/ytdlp_cookies.txt
+            chmod 600 /tmp/ytdlp_cookies.txt
+            export YTDLP_COOKIES_FILE=/tmp/ytdlp_cookies.txt
+            if head -c 200 /tmp/ytdlp_cookies.txt | grep -q "Netscape HTTP Cookie File"; then
+              echo "youtube cookies: YTDLP_COOKIES secret detected (Netscape format OK)"
+            else
+              echo "::warning::YTDLP_COOKIES secret does not look like a Netscape cookies.txt (missing '# Netscape HTTP Cookie File' header) — YouTube may still 403. Re-export via 'Get cookies.txt LOCALLY'."
+            fi
+          else
+            echo "youtube cookies: none (YTDLP_COOKIES secret not set)"
+          fi
+          if [ -n "${YTDLP_PROXY_URL:-}" ]; then
+            echo "youtube route: proxy (your IP, host redacted in tool logs)"
+          else
+            echo "youtube route: direct (GitHub runner IP — may hit 403/429 blocks)"
+          fi
           python3 scripts/footage_ladder.py \
             --routes out/daily/routes.json \
             --out out/daily
