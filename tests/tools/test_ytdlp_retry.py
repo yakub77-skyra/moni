@@ -8,11 +8,14 @@ batch mode marks SKIPPED per item and never aborts; TikTok stays blocklisted.
 from __future__ import annotations
 
 import sys
+import tempfile
 import types
 from pathlib import Path
 from unittest import mock
 
 import pytest
+
+from yt_dlp.utils import match_filter_func as real_match_filter_func
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -54,13 +57,16 @@ def _install_fake_yt_dlp(monkeypatch, script):
             action = script[min(idx, len(script) - 1)]
             if isinstance(action, Exception):
                 raise action
+            # A real download writes a real file; phantom paths must fail.
+            Path(self.prepare_filename(action)).touch()
             return action
 
         def prepare_filename(self, info):
-            return f"/tmp/fake_{info.get('id', 'x')}.mp4"
+            return str(Path(tempfile.gettempdir()) / f"fake_{info.get('id', 'x')}.mp4")
 
     module = types.ModuleType("yt_dlp")
     module.YoutubeDL = FakeYDL
+    module.utils = types.SimpleNamespace(match_filter_func=real_match_filter_func)
     monkeypatch.setitem(sys.modules, "yt_dlp", module)
     return seen, calls
 
@@ -176,10 +182,12 @@ def test_batch_continues_past_skipped(tmp_path, monkeypatch) -> None:
         def extract_info(self, url, download=True):
             if "always403" in url:
                 raise BlockError("HTTP Error 403: Forbidden")
-            return {"id": "good", "title": "t", "duration": 5, "uploader": "u"}
+            info = {"id": "good", "title": "t", "duration": 5, "uploader": "u"}
+            Path(self.prepare_filename(info)).touch()
+            return info
 
         def prepare_filename(self, info):
-            return "/tmp/fake_good.mp4"
+            return str(Path(tempfile.gettempdir()) / "fake_good.mp4")
 
     module = types.ModuleType("yt_dlp")
     module.YoutubeDL = RouterYDL
@@ -288,3 +296,72 @@ def test_block_error_without_proxy_points_at_proxy_fix(tmp_path, monkeypatch) ->
     assert not result.success
     assert "YTDLP_PROXY_URL" in (result.error or "")
     assert "route=direct" in (result.error or "")
+
+
+def test_duration_cap_in_opts_by_default_and_disabled_at_zero(tmp_path, monkeypatch) -> None:
+    seen, _ = _install_fake_yt_dlp(monkeypatch, [
+        {"id": "d1", "title": "t", "duration": 60, "uploader": "u"},
+    ])
+    tool = YtdlpDownloader()
+    result = tool.execute({"url": "https://youtube.com/watch?v=d1",
+                           "output_dir": str(tmp_path)})
+    assert result.success
+    assert callable(seen[0].get("match_filter"))
+
+    seen2, _ = _install_fake_yt_dlp(monkeypatch, [
+        {"id": "d2", "title": "t", "duration": 60, "uploader": "u"},
+    ])
+    again = tool.execute({"url": "https://youtube.com/watch?v=d2",
+                          "output_dir": str(tmp_path),
+                          "max_duration_seconds": 0})
+    assert again.success
+    assert "match_filter" not in seen2[0]
+
+
+def test_overlong_source_skipped_without_downloading(tmp_path, monkeypatch) -> None:
+    """A filter-rejected video returns metadata but writes no file.
+
+    Mirrors real yt-dlp: the tool must report SKIPPED (duration) instead of
+    success with a phantom path — and must not burn player-client retries.
+    """
+    seen: list[dict] = []
+
+    class SkipYDL:
+        def __init__(self, opts):
+            seen.append(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=True):
+            return {"id": "long", "title": "3 hour compilation",
+                    "duration": 10800, "uploader": "u"}
+
+        def prepare_filename(self, info):
+            return str(Path(tempfile.gettempdir()) / "fake_long_never_written.mp4")
+
+    module = types.ModuleType("yt_dlp")
+    module.YoutubeDL = SkipYDL
+    module.utils = types.SimpleNamespace(match_filter_func=real_match_filter_func)
+    monkeypatch.setitem(sys.modules, "yt_dlp", module)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    tool = YtdlpDownloader()
+    result = tool.execute({"url": "https://youtube.com/watch?v=long",
+                           "output_dir": str(tmp_path)})
+    assert not result.success
+    assert "SKIPPED" in (result.error or "")
+    assert "duration" in (result.error or "").lower()
+    assert len(seen) == 1  # zero player-client retries on a duration reject
+
+
+def test_resolve_max_duration_parsing() -> None:
+    from tools.video.ytdlp_downloader import _resolve_max_duration
+    assert _resolve_max_duration(None) == 600
+    assert _resolve_max_duration(300) == 300
+    assert _resolve_max_duration("900") == 900
+    assert _resolve_max_duration(0) is None
+    assert _resolve_max_duration("abc") == 600

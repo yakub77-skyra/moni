@@ -5,6 +5,10 @@ Thin guard over yt-dlp: blocklists TikTok (banned in India), defaults to
 Delegates the actual download to the `yt_dlp` Python package when present,
 else the `yt-dlp` binary. No URL is ever fabricated.
 
+Sources longer than `max_duration_seconds` (default 600s) are skipped on
+metadata before any bytes download — a 3-hour 720p source is ~5 GiB for an
+18-second reel. Skipped URLs are reported per-item, never aborting a batch.
+
 IP-block escape hatch (GitHub Actions datacenter IPs get 403/429 from
 YouTube): set a proxy pointing at your own network and ONLY YouTube/search
 traffic goes through it — heavy Remotion/FFmpeg rendering stays on GitHub.
@@ -110,7 +114,33 @@ def _resolve_cookies_file(explicit: str | None = None) -> str | None:
     return None
 
 
+def _resolve_max_duration(explicit: Any = None) -> int | None:
+    """Cap source length so a hours-long video is never fetched for a seconds-long reel.
+
+    A 15-20s breaking clip cut from a 3-hour 720p source means downloading
+    ~5 GiB on CI to use 18 seconds of it. Overlong candidates are skipped on
+    metadata (cheap) before any bytes download. 0/blank disables the cap.
+    """
+    raw = explicit if explicit is not None else 600
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 600
+    return seconds if seconds > 0 else None
+
+
+def _is_duration_reject(exc: Exception) -> bool:
+    """True when yt-dlp refused the video on the duration match-filter."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "match" in text and "filter" in text
+
+
 def _resolve_cookies_from_browser(explicit: str | None = None) -> str | None:
+    """Browser name for --cookies-from-browser (local runs only, never CI)."""
+    candidate = explicit or os.environ.get("YTDLP_COOKIES_FROM_BROWSER")
+    if candidate and str(candidate).strip():
+        return str(candidate).strip()
+    return None
     """Browser name for --cookies-from-browser (local runs only, never CI)."""
     candidate = explicit or os.environ.get("YTDLP_COOKIES_FROM_BROWSER")
     if candidate and str(candidate).strip():
@@ -141,7 +171,8 @@ class YtdlpDownloader(BaseTool):
     capabilities = ["download_video_url", "fetch_reel_footage", "fetch_trailer_footage"]
     supports = {"tiktok_blocked": True, "default_dir": "assets/raw",
                 "player_client_retry": True, "batch_urls": True,
-                "proxy": True, "cookies_file": True, "cookies_from_browser": True}
+                "proxy": True, "cookies_file": True, "cookies_from_browser": True,
+                "max_duration_filter": True}
     best_for = [
         "downloading IG Reels / YT Shorts / trailer URLs found by search tools",
         "acquiring real footage for breaking and trending reels",
@@ -174,6 +205,12 @@ class YtdlpDownloader(BaseTool):
                                      "description": "Optional browser name for "
                                                     "yt-dlp --cookies-from-browser "
                                                     "(local runs only, never CI)."},
+            "max_duration_seconds": {"type": "integer", "default": 600,
+                                     "description": "Skip sources longer than this "
+                                                    "(match-filter on metadata, before "
+                                                    "any download). A 3-hour 720p source "
+                                                    "is ~5 GiB for an 18s reel. "
+                                                    "0 disables the cap."},
         },
     }
 
@@ -269,6 +306,7 @@ class YtdlpDownloader(BaseTool):
         proxy = _resolve_proxy(inputs.get("proxy"))
         cookies_file = _resolve_cookies_file(inputs.get("cookies_file"))
         cookies_browser = _resolve_cookies_from_browser(inputs.get("cookies_from_browser"))
+        max_duration = _resolve_max_duration(inputs.get("max_duration_seconds"))
         route = self._redact_proxy(proxy)
 
         try:
@@ -282,8 +320,16 @@ class YtdlpDownloader(BaseTool):
                 return self._download_via_package(
                     yt_dlp, url, height, template, start,
                     proxy=proxy, cookies_file=cookies_file,
-                    cookies_browser=cookies_browser, route=route)
+                    cookies_browser=cookies_browser, route=route,
+                    max_duration=max_duration)
             except Exception as exc:
+                if _is_duration_reject(exc):
+                    return ToolResult(
+                        success=False,
+                        error=f"SKIPPED: duration filter rejected {url} "
+                              f"(longer than {max_duration}s — not worth a multi-GB "
+                              f"download for a seconds-long reel); route={route}",
+                    )
                 if not _looks_like_block(exc):
                     return ToolResult(success=False, error=f"yt-dlp download failed: {exc}")
                 last: Exception = exc
@@ -293,9 +339,16 @@ class YtdlpDownloader(BaseTool):
                         return self._download_via_package(
                             yt_dlp, url, height, template, start, player_client=client,
                             proxy=proxy, cookies_file=cookies_file,
-                            cookies_browser=cookies_browser, route=route)
+                            cookies_browser=cookies_browser, route=route,
+                            max_duration=max_duration)
                     except Exception as retry_exc:
                         last = retry_exc
+                        if _is_duration_reject(retry_exc):
+                            return ToolResult(
+                                success=False,
+                                error=f"SKIPPED: duration filter rejected {url} "
+                                      f"(longer than {max_duration}s); route={route}",
+                            )
                         if not _looks_like_block(retry_exc):
                             break
                 tried = ", ".join(PLAYER_CLIENTS)
@@ -320,10 +373,17 @@ class YtdlpDownloader(BaseTool):
             try:
                 self._download_via_binary(binary, url, height, out_template, client,
                                           proxy=proxy, cookies_file=cookies_file,
-                                          cookies_browser=cookies_browser)
+                                          cookies_browser=cookies_browser,
+                                          max_duration=max_duration)
                 break
             except Exception as exc:
                 last_err = str(exc)
+                if _is_duration_reject(exc):
+                    return ToolResult(
+                        success=False,
+                        error=f"SKIPPED: duration filter rejected {url} "
+                              f"(longer than {max_duration}s); route={route}",
+                    )
                 if not _looks_like_block(exc):
                     return ToolResult(success=False, error=f"yt-dlp binary failed: {exc}")
         else:
@@ -351,7 +411,8 @@ class YtdlpDownloader(BaseTool):
                               proxy: str | None = None,
                               cookies_file: str | None = None,
                               cookies_browser: str | None = None,
-                              route: str = "") -> ToolResult:
+                              route: str = "",
+                              max_duration: int | None = None) -> ToolResult:
         opts: dict[str, Any] = {
             "format": self._format(height),
             "outtmpl": template,
@@ -366,9 +427,28 @@ class YtdlpDownloader(BaseTool):
             opts["cookiesfrombrowser"] = (cookies_browser,)
         if player_client:
             opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
+        if max_duration:
+            match_filter_func = getattr(
+                getattr(yt_dlp, "utils", None), "match_filter_func", None)
+            if match_filter_func is None:
+                print("warning: yt_dlp has no match_filter_func; "
+                      "duration cap disabled for this download", flush=True)
+            else:
+                opts["match_filter"] = match_filter_func(
+                    f"duration < {int(max_duration)}")
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            if not info:
+                raise RuntimeError(
+                    f"rejected by match-filter for {url} (no metadata returned)")
             path = Path(ydl.prepare_filename(info))
+        if not path.is_file():
+            # Filter-rejected: yt-dlp returns metadata but writes nothing.
+            # Without this check we would report success with a phantom path.
+            actual = (info or {}).get("duration")
+            raise RuntimeError(
+                f"rejected by match-filter for {url} "
+                f"(source duration {actual}s exceeds cap {int(max_duration)}s)")
         return ToolResult(
             success=True,
             data={
@@ -388,7 +468,8 @@ class YtdlpDownloader(BaseTool):
                              out_template: str, player_client: str | None,
                              proxy: str | None = None,
                              cookies_file: str | None = None,
-                             cookies_browser: str | None = None) -> None:
+                             cookies_browser: str | None = None,
+                             max_duration: int | None = None) -> None:
         args = [
             binary, "-f", self._format(height),
             "-o", out_template, "--print", "after_move:filepath",
@@ -401,5 +482,15 @@ class YtdlpDownloader(BaseTool):
             args += ["--cookies-from-browser", cookies_browser]
         if player_client:
             args += ["--extractor-args", f"youtube:player_client={player_client}"]
+        if max_duration:
+            args += ["--match-filter", f"duration < {int(max_duration)}"]
+        out_dir = Path(out_template).parent
+        before = set(out_dir.iterdir()) if out_dir.is_dir() else set()
         args.append(url)
         self.run_command(args)
+        # A filter skip exits 0 with no new file. Without this check the caller
+        # would return a STALE file from an earlier URL as this URL's footage.
+        if max_duration and not (set(out_dir.iterdir()) - before):
+            raise RuntimeError(
+                f"rejected by match-filter for {url} "
+                f"(no new file; source exceeds cap {int(max_duration)}s)")
