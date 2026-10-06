@@ -73,6 +73,12 @@ def test_block_classifier() -> None:
     assert _looks_like_block(BlockError("HTTP Error 403: Forbidden"))
     assert _looks_like_block(BlockError("HTTP Error 429: Too Many Requests"))
     assert _looks_like_block(RuntimeError("rate-limit exceeded"))
+    # YouTube's datacenter-IP bot challenge (cookies present or not) must
+    # enter the player-client retry matrix, not fail on first attempt.
+    assert _looks_like_block(BlockError(
+        "ERROR: [youtube] Q4zGj5JYr5A: Sign in to confirm you’re not a bot. "
+        "Use --cookies-from-browser or --cookies for the authentication."))
+    assert _looks_like_block(BlockError("Sign in to confirm you're not a bot"))
     assert not _looks_like_block(ValueError("boom"))
     assert not _looks_like_block(RuntimeError("network unreachable"))
 
@@ -105,6 +111,27 @@ def test_403_retries_with_player_client_rotation(tmp_path, monkeypatch) -> None:
     assert clients[1] == PLAYER_CLIENTS[0] == "web_safari"
     assert clients[2] == PLAYER_CLIENTS[1] == "android"
     assert len(sleeps) == 2 and all(3.0 <= s <= 9.0 for s in sleeps)
+
+
+def test_bot_check_retries_with_player_client_rotation(tmp_path, monkeypatch) -> None:
+    seen, _ = _install_fake_yt_dlp(monkeypatch, [
+        _block("ERROR: [youtube] abc: Sign in to confirm you’re not a bot. "
+               "Use --cookies-from-browser or --cookies for the authentication."),
+        {"id": "ok2", "title": "t", "duration": 10, "uploader": "u"},
+    ])
+    monkeypatch.setattr("tools.video.ytdlp_downloader.random.uniform",
+                        lambda a, b: 3.0)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    tool = YtdlpDownloader()
+    result = tool.execute({"url": "https://youtube.com/watch?v=ok2",
+                           "output_dir": str(tmp_path)})
+    assert result.success
+    assert result.data["player_client"] == "web_safari"  # first client after bot-check
+    clients = [o.get("extractor_args", {}).get("youtube", {}).get("player_client", [None])[0]
+               for o in seen]
+    assert clients[0] is None  # plain attempt first
+    assert clients[1] == PLAYER_CLIENTS[0] == "web_safari"
 
 
 def test_persistent_block_marks_skipped(tmp_path, monkeypatch) -> None:

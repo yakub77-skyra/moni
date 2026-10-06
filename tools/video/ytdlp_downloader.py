@@ -41,7 +41,8 @@ from tools.base_tool import (
 
 BLOCKED_HOSTS = ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com")
 
-# Player-client fallback matrix for HTTP 403 / rate-limit blocks (additive).
+# Player-client fallback matrix for IP blocks: HTTP 403 / rate limits and
+# YouTube's "Sign in to confirm you're not a bot" challenge.
 # On a block error the same URL is retried once per client in order.
 PLAYER_CLIENTS = ("web_safari", "android", "ios", "mweb")
 
@@ -55,7 +56,14 @@ def _is_blocked(url: str) -> bool:
 
 
 def _looks_like_block(exc: Exception) -> bool:
-    """True for HTTP 403 / 429-style blocks worth a player-client retry."""
+    """True for IP-block-style errors worth a player-client retry.
+
+    Covers HTTP 403 / 429 rate limits AND YouTube's "Sign in to confirm
+    you're not a bot" challenge, which is what a flagged datacenter IP
+    actually returns even when a cookies file is passed. Alternate player
+    clients (especially android) routinely pass the bot-check, so it must
+    enter the retry matrix instead of failing on the first attempt.
+    """
     text = f"{type(exc).__name__}: {exc}".lower()
     return (
         "403" in text
@@ -64,6 +72,8 @@ def _looks_like_block(exc: Exception) -> bool:
         or "too many requests" in text
         or "rate limit" in text
         or "rate-limit" in text
+        or "not a bot" in text
+        or "sign in to confirm" in text
     )
 
 
